@@ -4,13 +4,14 @@ Shared helpers for the canonical Hugging Face object-detection dataset.
 
 from __future__ import annotations
 
+import os
 import hashlib
 import json
 import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 import yaml
 
@@ -94,6 +95,13 @@ def build_dataset_card(
         "---",
         "task_categories:",
         "- object-detection",
+        "configs:",
+        "- config_name: default",
+        "  data_files:",
+        "  - split: train",
+        "    path: train/metadata.jsonl",
+        "  - split: val",
+        "    path: val/metadata.jsonl",
         "pretty_name: Krishi Vaidya Bouncer Dataset",
         "---",
         "",
@@ -104,7 +112,8 @@ def build_dataset_card(
         "## Structure",
         "",
         "- `train/images/` and `val/images/` contain the canonical images.",
-        "- `train/metadata.parquet` and `val/metadata.parquet` contain per-image metadata and COCO-format bounding boxes.",
+        "- `train/metadata.jsonl` and `val/metadata.jsonl` are the Hugging Face-friendly metadata files used by the Hub.",
+        "- `train/metadata.parquet` and `val/metadata.parquet` are compact analytics/export artifacts.",
         "- `classes.json` stores the canonical class schema.",
         "- `licenses.json` stores source provenance and license notes.",
         "",
@@ -162,19 +171,19 @@ def _metadata_schema():
             ("source_name", pa.string()),
             ("source_type", pa.string()),
             ("source_handle", pa.string()),
-            ("split", pa.string()),
-            (
-                "objects",
-                pa.struct(
-                    [
-                        ("bbox", pa.list_(pa.list_(pa.float32()))),
-                        ("category", pa.list_(pa.int32())),
-                        ("category_name", pa.list_(pa.string())),
-                        ("area", pa.list_(pa.float32())),
-                        ("iscrowd", pa.list_(pa.int8())),
-                    ]
-                ),
-            ),
+                        ("split", pa.string()),
+                        (
+                            "objects",
+                            pa.struct(
+                                [
+                                    ("bbox", pa.list_(pa.list_(pa.float32()))),
+                                    ("categories", pa.list_(pa.int32())),
+                                    ("category_names", pa.list_(pa.string())),
+                                    ("area", pa.list_(pa.float32())),
+                                    ("iscrowd", pa.list_(pa.int8())),
+                                ]
+                            ),
+                        ),
             ("num_objects", pa.int32()),
             ("sha256", pa.string()),
         ]
@@ -186,6 +195,14 @@ def write_split_metadata(rows: Sequence[Dict], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(list(rows), schema=_metadata_schema())
     pq.write_table(table, output_path)
+    return output_path
+
+
+def write_split_metadata_jsonl(rows: Sequence[Dict], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return output_path
 
 
@@ -245,14 +262,16 @@ def export_yolo_from_canonical(dataset_root: Path, output_root: Path) -> Dict[st
     for split in ("train", "val"):
         rows = read_split_metadata(dataset_root, split)
         for row in rows:
-            src_image = dataset_root / split / "images" / row["file_name"]
-            dst_image = output_root / "images" / split / row["file_name"]
+            rel_path = Path(row["file_name"])
+            src_image = dataset_root / split / rel_path
+            image_name = rel_path.name
+            dst_image = output_root / "images" / split / image_name
             shutil.copy2(src_image, dst_image)
 
-            label_path = output_root / "labels" / split / f"{Path(row['file_name']).stem}.txt"
+            label_path = output_root / "labels" / split / f"{Path(image_name).stem}.txt"
             objects = row["objects"]
             lines = []
-            for category, bbox in zip(objects["category"], objects["bbox"]):
+            for category, bbox in zip(objects["categories"], objects["bbox"]):
                 lines.append(
                     f"{int(category)} {coco_bbox_to_yolo(bbox, int(row['width']), int(row['height']))}"
                 )
@@ -283,11 +302,22 @@ def create_archive(input_root: Path, archive_path: Path, archive_format: str) ->
 
 def upload_dataset_folder(local_root: Path, repo_id: str, private: bool = False) -> str:
     HfApi = _require_hf_hub()
+    token = (
+        os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HF_TOKEN")
+    )
     api = HfApi()
-    api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True, private=private)
+    api.create_repo(
+        repo_id=repo_id,
+        repo_type="dataset",
+        exist_ok=True,
+        private=private,
+        token=token,
+    )
     api.upload_folder(
         repo_id=repo_id,
         repo_type="dataset",
         folder_path=str(local_root),
+        token=token,
     )
     return f"https://huggingface.co/datasets/{repo_id}"

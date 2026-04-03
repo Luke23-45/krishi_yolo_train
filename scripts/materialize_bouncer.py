@@ -13,6 +13,8 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import yaml
 
@@ -28,6 +30,7 @@ from scripts.canonical_dataset import (  # noqa: E402
     write_dataset_card,
     write_licenses_json,
     write_split_metadata,
+    write_split_metadata_jsonl,
 )
 
 logging.basicConfig(
@@ -84,6 +87,8 @@ def check_canonical_integrity(output_dir: Path, schema: Dict) -> bool:
     for split in ("train", "val"):
         if not (output_dir / split / "images").exists():
             return False
+        if not (output_dir / split / "metadata.jsonl").exists():
+            return False
         if not (output_dir / split / "metadata.parquet").exists():
             return False
     return True
@@ -107,22 +112,21 @@ def fetch_kaggle(handle: str) -> Path:
     return Path(local_path)
 
 
-def _resolve_latest_roboflow_version(project: Any) -> Optional[int]:
-    try:
-        versions_obj = project.versions()
-    except Exception:
-        return None
-
+def _extract_version_numbers(versions_obj: Any) -> List[int]:
+    """Extract numeric version ids from SDK or REST response payloads."""
     candidates: List[int] = []
     iterable = versions_obj.values() if isinstance(versions_obj, dict) else versions_obj
+
     for item in iterable:
         if isinstance(item, int):
             candidates.append(item)
-        elif isinstance(item, str):
+            continue
+        if isinstance(item, str):
             tail = item.rsplit("/", 1)[-1]
             if tail.isdigit():
                 candidates.append(int(tail))
-        elif isinstance(item, dict):
+            continue
+        if isinstance(item, dict):
             for key in ("version", "id"):
                 raw_value = item.get(key)
                 if isinstance(raw_value, int):
@@ -133,6 +137,39 @@ def _resolve_latest_roboflow_version(project: Any) -> Optional[int]:
                     if tail.isdigit():
                         candidates.append(int(tail))
                         break
+
+    return sorted(set(candidates))
+
+
+def _resolve_latest_roboflow_version_sdk(project: Any) -> Optional[int]:
+    try:
+        versions_obj = project.versions()
+    except Exception:
+        return None
+
+    candidates = _extract_version_numbers(versions_obj)
+    return max(candidates) if candidates else None
+
+
+def _resolve_latest_roboflow_version_api(
+    workspace: str,
+    project_name: str,
+    api_key: str,
+) -> Optional[int]:
+    """
+    Resolve the newest project version via Roboflow's documented project endpoint.
+    Docs: https://docs.roboflow.com/developer/rest-api/get-a-project-and-list-versions
+    """
+    query = urlencode({"api_key": api_key})
+    url = f"https://api.roboflow.com/{workspace}/{project_name}?{query}"
+    try:
+        with urlopen(url, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    project_payload = payload.get("project", {})
+    candidates = _extract_version_numbers(project_payload.get("versions", []))
     return max(candidates) if candidates else None
 
 
@@ -166,7 +203,10 @@ def fetch_roboflow(handle: str, cache_dir: Path) -> Path:
         try:
             dataset = project.version(requested_version).download("yolov8")
         except Exception as exc:
-            fallback_version = _resolve_latest_roboflow_version(project)
+            fallback_version = (
+                _resolve_latest_roboflow_version_sdk(project)
+                or _resolve_latest_roboflow_version_api(workspace, project_name, api_key)
+            )
             if fallback_version is None or fallback_version == requested_version:
                 raise exc
             logger.warning(
@@ -234,6 +274,7 @@ def _materialize_canonical_dataset(
 
     for split in ("train", "val"):
         write_split_metadata(split_rows[split], canonical_root / split / "metadata.parquet")
+        write_split_metadata_jsonl(split_rows[split], canonical_root / split / "metadata.jsonl")
 
     write_classes_json(canonical_root, schema)
     write_licenses_json(canonical_root, sources_cfg)

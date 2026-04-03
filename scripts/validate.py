@@ -58,8 +58,10 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
         dataset_dir / "licenses.json",
         dataset_dir / "README.md",
         dataset_dir / "train" / "images",
+        dataset_dir / "train" / "metadata.jsonl",
         dataset_dir / "train" / "metadata.parquet",
         dataset_dir / "val" / "images",
+        dataset_dir / "val" / "metadata.jsonl",
         dataset_dir / "val" / "metadata.parquet",
     ]
     missing = [str(path) for path in required if not path.exists()]
@@ -75,7 +77,8 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
 
     for split in ("train", "val"):
         rows = read_split_metadata(dataset_dir, split)
-        image_dir = dataset_dir / split / "images"
+        split_dir = dataset_dir / split
+        image_dir = split_dir / "images"
         files_on_disk = {
             path.name for path in image_dir.iterdir()
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
@@ -84,8 +87,8 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
 
         for row in rows:
             file_name = row["file_name"]
-            rows_seen.add(file_name)
-            image_path = image_dir / file_name
+            rows_seen.add(Path(file_name).name)
+            image_path = split_dir / file_name
             image_paths.append(image_path)
 
             if not image_path.exists():
@@ -97,13 +100,13 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
             if num_objects != len(objects["bbox"]):
                 errors.append(f"{split}/{file_name}: num_objects does not match bbox count")
             expected_len = len(objects["bbox"])
-            for key in ("category", "category_name", "area", "iscrowd"):
+            for key in ("categories", "category_names", "area", "iscrowd"):
                 if len(objects[key]) != expected_len:
                     errors.append(f"{split}/{file_name}: objects.{key} length does not match bbox count")
 
             width = int(row["width"])
             height = int(row["height"])
-            for category, bbox, area in zip(objects["category"], objects["bbox"], objects["area"]):
+            for category, bbox, area in zip(objects["categories"], objects["bbox"], objects["area"]):
                 if int(category) not in names:
                     errors.append(f"{split}/{file_name}: unknown category id {category}")
                 x, y, w, h = [float(v) for v in bbox]

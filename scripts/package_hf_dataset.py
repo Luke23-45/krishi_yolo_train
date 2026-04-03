@@ -20,8 +20,10 @@ def validate_canonical_root(dataset_root: Path) -> None:
         dataset_root / "licenses.json",
         dataset_root / "README.md",
         dataset_root / "train" / "images",
+        dataset_root / "train" / "metadata.jsonl",
         dataset_root / "train" / "metadata.parquet",
         dataset_root / "val" / "images",
+        dataset_root / "val" / "metadata.jsonl",
         dataset_root / "val" / "metadata.parquet",
     ]
     missing = [str(path) for path in required if not path.exists()]

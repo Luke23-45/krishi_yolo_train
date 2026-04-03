@@ -56,7 +56,7 @@ class CanonicalSample:
     def to_metadata_row(self, sha256: str) -> Dict:
         return {
             "image_id": self.image_id,
-            "file_name": self.output_file_name,
+            "file_name": f"images/{self.output_file_name}",
             "width": self.width,
             "height": self.height,
             "source_name": self.source_name,
@@ -65,8 +65,8 @@ class CanonicalSample:
             "split": self.split,
             "objects": {
                 "bbox": [obj.bbox for obj in self.objects],
-                "category": [obj.category for obj in self.objects],
-                "category_name": [obj.category_name for obj in self.objects],
+                "categories": [obj.category for obj in self.objects],
+                "category_names": [obj.category_name for obj in self.objects],
                 "area": [obj.area for obj in self.objects],
                 "iscrowd": [obj.iscrowd for obj in self.objects],
             },
