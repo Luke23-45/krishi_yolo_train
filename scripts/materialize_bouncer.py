@@ -115,29 +115,34 @@ def fetch_kaggle(handle: str) -> Path:
 def _extract_version_numbers(versions_obj: Any) -> List[int]:
     """Extract numeric version ids from SDK or REST response payloads."""
     candidates: List[int] = []
-    iterable = versions_obj.values() if isinstance(versions_obj, dict) else versions_obj
 
-    for item in iterable:
-        if isinstance(item, int):
-            candidates.append(item)
-            continue
-        if isinstance(item, str):
-            tail = item.rsplit("/", 1)[-1]
+    def add_from_value(value: Any) -> None:
+        if isinstance(value, int):
+            candidates.append(value)
+            return
+        if isinstance(value, str):
+            tail = value.rsplit("/", 1)[-1]
             if tail.isdigit():
                 candidates.append(int(tail))
-            continue
-        if isinstance(item, dict):
+            return
+        if isinstance(value, dict):
+            matched = False
             for key in ("version", "id"):
-                raw_value = item.get(key)
-                if isinstance(raw_value, int):
-                    candidates.append(raw_value)
-                    break
-                if isinstance(raw_value, str):
-                    tail = raw_value.rsplit("/", 1)[-1]
-                    if tail.isdigit():
-                        candidates.append(int(tail))
-                        break
+                if key in value:
+                    matched = True
+                    add_from_value(value[key])
+            if not matched:
+                for nested_value in value.values():
+                    add_from_value(nested_value)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                add_from_value(item)
+            return
+        if hasattr(value, "values") and callable(value.values):
+            add_from_value(list(value.values()))
 
+    add_from_value(versions_obj)
     return sorted(set(candidates))
 
 
