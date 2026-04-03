@@ -237,10 +237,15 @@ def write_yolo_data_yaml(output_root: Path, names: Dict[int, str]) -> Path:
 
 def coco_bbox_to_yolo(bbox: Sequence[float], width: int, height: int) -> str:
     x, y, w, h = [float(v) for v in bbox]
-    x_center = (x + w / 2.0) / float(width)
-    y_center = (y + h / 2.0) / float(height)
-    w_norm = w / float(width)
-    h_norm = h / float(height)
+    x1 = max(0.0, min(1.0, x / float(width)))
+    y1 = max(0.0, min(1.0, y / float(height)))
+    x2 = max(0.0, min(1.0, (x + w) / float(width)))
+    y2 = max(0.0, min(1.0, (y + h) / float(height)))
+
+    w_norm = max(0.0, min(1.0, x2 - x1))
+    h_norm = max(0.0, min(1.0, y2 - y1))
+    x_center = max(0.0, min(1.0, (x1 + x2) / 2.0))
+    y_center = max(0.0, min(1.0, (y1 + y2) / 2.0))
     return f"{x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}"
 
 
