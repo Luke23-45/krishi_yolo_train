@@ -1,0 +1,22 @@
+# Krishi Vaidya — Bouncer Data Pipeline
+# ======================================
+
+# Auto-download from Kaggle
+kagglehub>=0.3.0
+
+# COCO annotation parsing & conversion
+pycocotools>=2.0.8
+
+# Configuration
+PyYAML>=6.0
+
+# Progress bars
+tqdm>=4.65
+
+# Image handling
+Pillow>=10.0
+
+# Numerical operations
+numpy>=1.24
+
+roboflow

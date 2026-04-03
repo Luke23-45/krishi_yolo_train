@@ -1,0 +1,283 @@
+# ============================================================================
+# Krishi Vaidya — Bouncer Data Pipeline Configuration
+# ============================================================================
+#
+# Master class schema for the 12-class bouncer model.
+# Every adapter remaps its native classes into this canonical ID space.
+#
+# This file is the single source of truth for:
+#   1. What classes exist (and their IDs)
+#   2. Where data comes from (and how to fetch it)
+#   3. How each source's native labels map to the master schema
+#
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# CANONICAL CLASS SCHEMA
+# ---------------------------------------------------------------------------
+# Order matters. These IDs are burned into data.yaml and the trained model.
+# Never reorder or insert between existing entries.
+
+schema:
+  nc: 12
+  names:
+    0: rice_leaf
+    1: rice_panicle
+    2: rice_grain_cluster
+    3: maize_leaf
+    4: maize_ear
+    5: potato_leaf
+    6: potato_tuber
+    7: tomato_leaf
+    8: tomato_fruit
+    9: brassica_leaf
+    10: cauliflower_head
+    11: cabbage_head
+
+# ---------------------------------------------------------------------------
+# OUTPUT CONFIGURATION
+# ---------------------------------------------------------------------------
+
+output:
+  root: krishi_bouncer_dataset
+  image_size: 640            # Reference only — actual resize is at training time
+  val_split_ratio: 0.2       # Used when a source has no pre-defined val split
+
+# ---------------------------------------------------------------------------
+# DATA SOURCES
+# ---------------------------------------------------------------------------
+# Each source is processed independently, then merged.
+#
+# Fields:
+#   name        — Human-readable identifier (used for logging and filename prefixing)
+#   type        — "kaggle" (auto-download) or "local" (you provide the path)
+#   handle      — Kaggle dataset slug (for type=kaggle) or absolute filesystem path (for type=local)
+#   format      — "yolo" | "coco" | "classification"
+#   enabled     — Set to false to skip a source without deleting its config
+#   class_map   — Maps source class names/IDs → master Krishi class IDs
+#                  Keys are the source's native class names (strings) or IDs (ints).
+#                  Values are master class IDs (0–11).
+#                  Any source class not listed here is DROPPED (ignored).
+#   split       — "preserve" (use source's train/val dirs) or "auto" (random 80/20)
+#   notes       — Free-text documentation
+
+sources:
+
+  # =========================================================================
+  # TIER 1 — KAGGLE (Auto-downloadable)
+  # =========================================================================
+
+  - name: tomato_yolov8_kaggle
+    type: kaggle
+    handle: vasantharank/tomato-leaf-disease-detection-yolov8-dataset
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      # The exact native class names will be discovered during first run.
+      # These are educated guesses based on the dataset description.
+      # The adapter will log unmapped classes so you can fix this config.
+      Tomato_Bacterial_spot: 7
+      Tomato_Early_blight: 7
+      Tomato_Late_blight: 7
+      Tomato_Leaf_Mold: 7
+      Tomato_Septoria_leaf_spot: 7
+      Tomato_Spider_mites: 7
+      Tomato_Target_Spot: 7
+      Tomato_Tomato_YellowLeaf: 7
+      Tomato_Tomato_mosaic_virus: 7
+      Tomato_healthy: 7
+      # All leaf-related classes → tomato_leaf (7)
+      # If the dataset has a "fruit" class, add:
+      # tomato_fruit: 8
+    notes: >
+      Gold standard. ~10,853 images already in YOLOv8 format.
+      Native class names need verification on first run — the adapter
+      will log any unmapped classes.
+
+  - name: rice_panicle_bangladesh_kaggle
+    type: kaggle
+    handle: rifat963/annotated-rice-panicle-image-from-bangladesh
+    format: coco
+    enabled: true
+    split: auto
+    class_map:
+      rice_panicle: 1
+      panicle: 1
+      Rice_Panicle: 1
+      # Multiple possible names — the COCO adapter matches case-insensitively
+    notes: >
+      ~2,193 original images with COCO JSON bounding box annotations.
+      The COCOAdapter converts these to YOLO txt format automatically.
+
+  - name: potato_leaf_kaggle
+    type: kaggle
+    handle: nirmalsankalana/potato-leaf-disease-dataset
+    format: classification
+    enabled: false  # DISABLED by default — classification-only, no bounding boxes.
+                    # Enable if you want full-frame bbox bootstrapping.
+                    # Better to use the Roboflow YOLO-format version instead.
+    split: auto
+    class_map:
+      Early_Blight: 5
+      Late_Blight: 5
+      Healthy: 5
+      # All potato leaf classes → potato_leaf (5)
+    notes: >
+      Classification-only dataset (folder-per-class, NO bounding boxes).
+      The ClassifierAdapter creates full-frame bounding boxes as a bootstrap.
+      Prefer the Roboflow YOLO-format potato dataset for real detection training.
+
+  # =========================================================================
+  # TIER 2 — ROBOFLOW (API Auto-download)
+  # =========================================================================
+  # Uses the ROBOFLOW_API_KEY environment variable.
+  # handle format: "workspace_id/project_id/version"
+
+  - name: rice_panicle_roboflow
+    type: roboflow
+    handle: "0o-mv2zu/rice-panicle-dataset-wxdyx/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      rice_panicle: 1
+      Panicle: 1
+      panicle: 1
+    notes: >
+      Roboflow: https://universe.roboflow.com/0o-mv2zu/rice-panicle-dataset-wxdyx
+      ~5,572 images. Download in YOLOv8 format.
+
+  - name: rice_grain_roboflow
+    type: roboflow
+    handle: "identify-rice-type/rice-grain-detection-dycoc/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      rice_grain: 2
+      Rice_Grain: 2
+      grain: 2
+    notes: >
+      Roboflow: https://universe.roboflow.com/identify-rice-type/rice-grain-detection-dycoc
+      Download in YOLOv8 format.
+
+  - name: rice_leaf_roboflow
+    type: roboflow
+    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    format: yolo
+    enabled: false
+    split: preserve
+    class_map:
+      rice_leaf: 0
+      Rice_Leaf: 0
+      leaf: 0
+      Leaf: 0
+    notes: >
+      Find a rice leaf detection dataset on Roboflow Universe.
+      Search: "rice leaf detection" → export YOLOv8 format.
+
+  - name: potato_leaf_roboflow
+    type: roboflow
+    handle: "potato-leaf-diseases/potato_leaf_disease/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      potato_leaf: 5
+      Potato_Leaf: 5
+      leaf: 5
+    notes: >
+      Roboflow: https://universe.roboflow.com/potato-leaf-diseases/potato_leaf_disease
+      Download in YOLOv8 format.
+
+  - name: maize_leaf_roboflow
+    type: roboflow
+    handle: "maize-specific/maize-leaf-diseases/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      maize_leaf: 3
+      Maize_Leaf: 3
+      corn_leaf: 3
+      leaf: 3
+    notes: >
+      Roboflow: https://universe.roboflow.com/maize-specific/maize-leaf-diseases
+      ~10,000+ images. Download in YOLOv8 format.
+
+  - name: maize_ear_roboflow
+    type: roboflow
+    handle: "research-kesig/corn-ears-detection/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      corn_ear: 4
+      Corn_Ear: 4
+      ear: 4
+      cob: 4
+    notes: >
+      Roboflow: https://universe.roboflow.com/research-kesig/corn-ears-detection
+      Download in YOLOv8 format.
+
+  - name: potato_tuber_roboflow
+    type: roboflow
+    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    format: yolo
+    enabled: false
+    split: preserve
+    class_map:
+      potato: 6
+      Potato: 6
+      tuber: 6
+      potato_tuber: 6
+    notes: >
+      Search Roboflow Universe for "potato detection" or "potato tuber".
+      Download in YOLOv8 format. This captures blackleg, common scab,
+      and other tuber-presenting diseases.
+
+  - name: brassica_leaf_roboflow
+    type: roboflow
+    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    format: yolo
+    enabled: false
+    split: preserve
+    class_map:
+      leaf: 9
+      Leaf: 9
+      cabbage_leaf: 9
+      cauliflower_leaf: 9
+      brassica_leaf: 9
+    notes: >
+      Search Roboflow Universe for "cabbage leaf" or "brassica leaf disease".
+      Download in YOLOv8 format. Covers black rot, downy mildew, and
+      diamondback moth damage that appears on leaves, not heads.
+
+  - name: cauliflower_roboflow
+    type: roboflow
+    handle: "yolo2-rtr8h/cauliflower-tv0hi/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      cauliflower: 10
+      Cauliflower: 10
+      cauliflower_head: 10
+    notes: >
+      Roboflow: https://universe.roboflow.com/yolo2-rtr8h/cauliflower-tv0hi
+      Download in YOLOv8 format.
+
+  - name: cabbage_roboflow
+    type: roboflow
+    handle: "yolo-ssbxq/cabbage-gf0rt/1"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      cabbage: 11
+      Cabbage: 11
+      cabbage_head: 11
+    notes: >
+      Roboflow: https://universe.roboflow.com/yolo-ssbxq/cabbage-gf0rt
+      Download in YOLOv8 format.
