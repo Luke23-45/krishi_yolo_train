@@ -59,10 +59,10 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
         dataset_dir / "README.md",
         dataset_dir / "train" / "images",
         dataset_dir / "train" / "metadata.jsonl",
-        dataset_dir / "train" / "metadata.parquet",
         dataset_dir / "val" / "images",
         dataset_dir / "val" / "metadata.jsonl",
-        dataset_dir / "val" / "metadata.parquet",
+        dataset_dir / "parquet" / "train_metadata.parquet",
+        dataset_dir / "parquet" / "val_metadata.parquet",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -225,6 +225,11 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
                     errors.append(f"{split}/{label_path.name}:{line_no}: class id {cls_id} out of range")
                 if any(value < 0.0 or value > 1.0 for value in coords):
                     errors.append(f"{split}/{label_path.name}:{line_no}: coordinate outside [0,1]")
+                x_center, y_center, box_w, box_h = coords
+                if (x_center - box_w / 2.0) < 0.0 or (x_center + box_w / 2.0) > 1.0:
+                    errors.append(f"{split}/{label_path.name}:{line_no}: x bbox extends outside image")
+                if (y_center - box_h / 2.0) < 0.0 or (y_center + box_h / 2.0) > 1.0:
+                    errors.append(f"{split}/{label_path.name}:{line_no}: y bbox extends outside image")
                 class_counts[cls_id] += 1
 
     image_results = _check_images_readable(image_paths) if do_check_images else {}

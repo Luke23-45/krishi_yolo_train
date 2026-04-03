@@ -89,7 +89,7 @@ def check_canonical_integrity(output_dir: Path, schema: Dict) -> bool:
             return False
         if not (output_dir / split / "metadata.jsonl").exists():
             return False
-        if not (output_dir / split / "metadata.parquet").exists():
+        if not (output_dir / "parquet" / f"{split}_metadata.parquet").exists():
             return False
     return True
 
@@ -278,7 +278,7 @@ def _materialize_canonical_dataset(
         split_counts[sample.split] += 1
 
     for split in ("train", "val"):
-        write_split_metadata(split_rows[split], canonical_root / split / "metadata.parquet")
+        write_split_metadata(split_rows[split], canonical_root / "parquet" / f"{split}_metadata.parquet")
         write_split_metadata_jsonl(split_rows[split], canonical_root / split / "metadata.jsonl")
 
     write_classes_json(canonical_root, schema)

@@ -113,7 +113,7 @@ def build_dataset_card(
         "",
         "- `train/images/` and `val/images/` contain the canonical images.",
         "- `train/metadata.jsonl` and `val/metadata.jsonl` are the Hugging Face-friendly metadata files used by the Hub.",
-        "- `train/metadata.parquet` and `val/metadata.parquet` are compact analytics/export artifacts.",
+        "- `parquet/train_metadata.parquet` and `parquet/val_metadata.parquet` are compact analytics/export artifacts.",
         "- `classes.json` stores the canonical class schema.",
         "- `licenses.json` stores source provenance and license notes.",
         "",
@@ -208,7 +208,7 @@ def write_split_metadata_jsonl(rows: Sequence[Dict], output_path: Path) -> Path:
 
 def read_split_metadata(dataset_root: Path, split: str) -> List[Dict]:
     _, pq = _require_pyarrow()
-    path = dataset_root / split / "metadata.parquet"
+    path = dataset_root / "parquet" / f"{split}_metadata.parquet"
     if not path.exists():
         return []
     return pq.read_table(path).to_pylist()

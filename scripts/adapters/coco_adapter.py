@@ -228,14 +228,22 @@ class COCOAdapter(BaseAdapter):
                 if json_path.stat().st_size < 100:
                     continue  # Skip tiny files
 
-                # Infer split from filename
-                lower_name = json_path.stem.lower()
-                if "val" in lower_name or "valid" in lower_name or "test" in lower_name:
+                relative_parts = [
+                    part.lower() for part in json_path.relative_to(source_dir).parts
+                ]
+                # Infer split from path first, then filename
+                if any(part in {"val", "valid", "validation", "test"} for part in relative_parts):
                     split = "val"
-                elif "train" in lower_name:
+                elif any(part == "train" for part in relative_parts):
                     split = "train"
                 else:
-                    split = "train"  # Default to train
+                    lower_name = json_path.stem.lower()
+                    if "val" in lower_name or "valid" in lower_name or "test" in lower_name:
+                        split = "val"
+                    elif "train" in lower_name:
+                        split = "train"
+                    else:
+                        split = "train"  # Default to train
 
                 results.append((json_path, split))
 
@@ -256,11 +264,12 @@ class COCOAdapter(BaseAdapter):
         Tries several common conventions.
         """
         candidates = [
-            source_dir / "images",
-            source_dir / "train",
-            source_dir / "train" / "images",
+            json_path.parent.parent / "images",
             json_path.parent / "images",
             json_path.parent,
+            source_dir / "images",
+            source_dir / "train" / "images",
+            source_dir / "train",
             source_dir,
         ]
 

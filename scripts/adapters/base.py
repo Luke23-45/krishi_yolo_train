@@ -281,15 +281,7 @@ class BaseAdapter(abc.ABC):
         w = box_w * width
         h = box_h * height
 
-        x = max(0.0, min(float(width), x))
-        y = max(0.0, min(float(height), y))
-        w = max(0.0, min(float(width), w))
-        h = max(0.0, min(float(height), h))
-
-        if w <= 0.0 or h <= 0.0:
-            return None
-
-        return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+        return BaseAdapter.sanitize_coco_bbox([x, y, w, h], width, height)
 
     @staticmethod
     def sanitize_coco_bbox(
