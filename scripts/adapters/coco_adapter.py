@@ -26,7 +26,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from scripts.adapters.base import BaseAdapter
+from scripts.adapters.base import BaseAdapter, CanonicalObject, CanonicalSample
 
 logger = logging.getLogger("krishi.adapter.coco")
 
@@ -46,12 +46,15 @@ class COCOAdapter(BaseAdapter):
 
         self.ensure_staging_dirs(staging_dir)
         lookup = self.build_class_map_lookup(class_map)
+        default_master_id = self.infer_single_target_class(class_map)
 
         stats = {
             "images_processed": 0,
             "labels_written": 0,
             "classes_found": {},
             "unmapped_classes": [],
+            "auto_mapped_classes": [],
+            "samples": [],
             "errors": 0,
         }
 
@@ -62,7 +65,7 @@ class COCOAdapter(BaseAdapter):
             return stats
 
         # 2. Process each JSON file (there may be one per split)
-        all_items: List[Tuple[Path, List[str], str]] = []
+        all_items: List[Tuple[Path, List[CanonicalObject], str, int, int]] = []
 
         for json_path, inferred_split in json_files:
             logger.info(f"[{source_name}] Processing {json_path.name} (split: {inferred_split})")
@@ -84,15 +87,13 @@ class COCOAdapter(BaseAdapter):
             # Build category_id → master_id remap
             cat_remap = {}
             for cat_id, cat_name in categories.items():
-                key = cat_name.lower().strip()
-                master_id = (
-                    lookup.get(key)
-                    or lookup.get(key.replace("_", " "))
-                    or lookup.get(key.replace(" ", "_"))
-                )
+                key = self.normalize_class_name(cat_name)
+                master_id = lookup.get(key, default_master_id)
                 cat_remap[cat_id] = master_id
                 if master_id is None:
                     stats["unmapped_classes"].append(cat_name)
+                elif key not in lookup:
+                    stats["auto_mapped_classes"].append(cat_name)
 
             # Build image lookup
             images_meta = {
@@ -125,35 +126,42 @@ class COCOAdapter(BaseAdapter):
                     stats["errors"] += 1
                     continue
 
-                # Convert annotations to YOLO lines
-                yolo_lines = []
+                # Convert annotations to canonical objects
+                canonical_objects: List[CanonicalObject] = []
                 for ann in anns_by_image.get(img_id, []):
                     cat_id = ann["category_id"]
                     master_id = cat_remap.get(cat_id)
                     if master_id is None:
                         continue
 
-                    bbox = ann["bbox"]  # [x, y, w, h] in pixels
-                    yolo_line = self._coco_bbox_to_yolo(
-                        bbox, img_w, img_h, master_id
-                    )
-                    if yolo_line:
-                        yolo_lines.append(yolo_line)
+                    bbox = self.sanitize_coco_bbox(ann["bbox"], img_w, img_h)
+                    if bbox is not None:
+                        area = float(bbox[2] * bbox[3])
+                        canonical_objects.append(
+                            CanonicalObject(
+                                bbox=[round(float(v), 4) for v in bbox],
+                                category=master_id,
+                                category_name="",
+                                area=round(area, 4),
+                            )
+                        )
                         stats["classes_found"][master_id] = (
                             stats["classes_found"].get(master_id, 0) + 1
                         )
 
-                if yolo_lines:
-                    all_items.append((img_path, yolo_lines, inferred_split))
+                if canonical_objects:
+                    all_items.append(
+                        (img_path, canonical_objects, inferred_split, img_w, img_h)
+                    )
 
         # 3. Apply split strategy
-        if split_strategy == "auto" or all(s == "train" for _, _, s in all_items):
+        if split_strategy == "auto" or all(s == "train" for _, _, s, _, _ in all_items):
             random.seed(42)
             random.shuffle(all_items)
             n_val = max(1, int(len(all_items) * val_ratio))
             all_items = [
-                (img, lines, "val" if i < n_val else "train")
-                for i, (img, lines, _) in enumerate(all_items)
+                (img, lines, "val" if i < n_val else "train", img_w, img_h)
+                for i, (img, lines, _, img_w, img_h) in enumerate(all_items)
             ]
             logger.info(
                 f"[{source_name}] Auto-split: "
@@ -161,13 +169,20 @@ class COCOAdapter(BaseAdapter):
             )
 
         # 4. Write to staging
-        for img_path, yolo_lines, split in all_items:
+        for img_path, canonical_objects, split, img_w, img_h in all_items:
             try:
                 new_name = self.build_output_name(source_name, img_path, source_dir)
-                label_name = Path(new_name).with_suffix(".txt").name
-
-                self.copy_image(img_path, staging_dir, split, new_name)
-                self.write_label(staging_dir, split, label_name, yolo_lines)
+                sample = CanonicalSample(
+                    image_id=Path(new_name).stem,
+                    image_path=str(img_path.resolve()),
+                    output_file_name=new_name,
+                    width=img_w,
+                    height=img_h,
+                    split=split,
+                    objects=canonical_objects,
+                    source_name=source_name,
+                )
+                stats["samples"].append(sample)
 
                 stats["images_processed"] += 1
                 stats["labels_written"] += 1
@@ -186,38 +201,17 @@ class COCOAdapter(BaseAdapter):
                 f"[{source_name}] Unmapped categories: "
                 f"{list(set(stats['unmapped_classes']))}"
             )
+        if stats["auto_mapped_classes"]:
+            logger.info(
+                f"[{source_name}] Auto-mapped variant categories: "
+                f"{list(set(stats['auto_mapped_classes']))}"
+            )
 
         return stats
 
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _coco_bbox_to_yolo(
-        bbox: list, img_w: int, img_h: int, class_id: int
-    ) -> Optional[str]:
-        """
-        Convert COCO bbox [x_top_left, y_top_left, width, height] (pixels)
-        to YOLO format: "<class_id> <x_center> <y_center> <width> <height>" (normalized).
-        """
-        x, y, w, h = bbox
-
-        if w <= 0 or h <= 0:
-            return None
-
-        x_center = (x + w / 2) / img_w
-        y_center = (y + h / 2) / img_h
-        w_norm = w / img_w
-        h_norm = h / img_h
-
-        # Clamp to [0, 1]
-        x_center = max(0.0, min(1.0, x_center))
-        y_center = max(0.0, min(1.0, y_center))
-        w_norm = max(0.0, min(1.0, w_norm))
-        h_norm = max(0.0, min(1.0, h_norm))
-
-        return f"{class_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}"
 
     def _discover_annotations(
         self, source_dir: Path
@@ -228,13 +222,9 @@ class COCOAdapter(BaseAdapter):
         """
         results = []
 
-        # Check common locations
-        for name_pattern in (
-            "*.json",
-            "annotations/*.json",
-            "annotation/*.json",
-        ):
-            for json_path in source_dir.glob(name_pattern):
+        # Search recursively because many Kaggle archives nest the COCO files.
+        for name_pattern in ("*.json",):
+            for json_path in source_dir.rglob(name_pattern):
                 if json_path.stat().st_size < 100:
                     continue  # Skip tiny files
 

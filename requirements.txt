@@ -19,4 +19,9 @@ Pillow>=10.0
 # Numerical operations
 numpy>=1.24
 
+# Canonical HF dataset metadata
+pandas>=2.0
+pyarrow>=14.0
+huggingface_hub>=0.24
+
 roboflow

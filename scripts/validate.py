@@ -1,18 +1,5 @@
 """
-scripts/validate.py
---------------------
-Post-materialization validation for the Krishi Vaidya bouncer dataset.
-
-Performs integrity checks:
-    1. Image ↔ label file alignment (every image has a label, every label has an image)
-    2. Label format integrity (valid class IDs, coordinates in [0, 1])
-    3. Class distribution analysis with imbalance warnings
-    4. Empty label detection
-    5. Image readability check (optional, slower)
-
-Usage:
-    python scripts/validate.py --dataset krishi_bouncer_dataset
-    python scripts/validate.py --dataset krishi_bouncer_dataset --check-images
+Validation for canonical Hugging Face and derived YOLO datasets.
 """
 
 from __future__ import annotations
@@ -21,7 +8,7 @@ import argparse
 import json
 import logging
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -30,25 +17,140 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.canonical_dataset import IMAGE_EXTENSIONS, read_schema_names, read_split_metadata
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s │ %(name)-20s │ %(levelname)-7s │ %(message)s",
+    format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("krishi.validate")
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
+def resolve_dataset_path(path_value: str | Path) -> Path:
+    expanded = Path(str(path_value)).expanduser()
+    if expanded.is_absolute():
+        return expanded
+    return (PROJECT_ROOT / expanded).resolve()
 
 
-# ============================================================================
-# VALIDATION CHECKS
-# ============================================================================
+def _check_images_readable(image_paths: List[Path]) -> Dict:
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"skipped": True}
 
-def check_structure(dataset_dir: Path) -> bool:
-    """Verify the directory structure is correct."""
-    logger.info("─" * 50)
-    logger.info("CHECK 1: Directory Structure")
-    logger.info("─" * 50)
+    corrupt = []
+    for image_path in image_paths:
+        try:
+            with Image.open(image_path) as img:
+                img.verify()
+        except Exception as exc:
+            corrupt.append(f"{image_path.name}: {exc}")
+    return {"checked": len(image_paths), "corrupt": corrupt}
+
+
+def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None:
+    logger.info("Validating canonical dataset: %s", dataset_dir)
+
+    required = [
+        dataset_dir / "classes.json",
+        dataset_dir / "licenses.json",
+        dataset_dir / "README.md",
+        dataset_dir / "train" / "images",
+        dataset_dir / "train" / "metadata.parquet",
+        dataset_dir / "val" / "images",
+        dataset_dir / "val" / "metadata.parquet",
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        logger.error("Missing required canonical paths: %s", missing)
+        sys.exit(1)
+
+    names = read_schema_names(dataset_dir)
+    class_counts: Counter = Counter()
+    split_summary: Dict[str, Dict[str, int]] = {}
+    errors: List[str] = []
+    image_paths: List[Path] = []
+
+    for split in ("train", "val"):
+        rows = read_split_metadata(dataset_dir, split)
+        image_dir = dataset_dir / split / "images"
+        files_on_disk = {
+            path.name for path in image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        }
+        rows_seen: Set[str] = set()
+
+        for row in rows:
+            file_name = row["file_name"]
+            rows_seen.add(file_name)
+            image_path = image_dir / file_name
+            image_paths.append(image_path)
+
+            if not image_path.exists():
+                errors.append(f"{split}/{file_name}: image referenced in parquet does not exist")
+                continue
+
+            objects = row["objects"]
+            num_objects = int(row["num_objects"])
+            if num_objects != len(objects["bbox"]):
+                errors.append(f"{split}/{file_name}: num_objects does not match bbox count")
+            expected_len = len(objects["bbox"])
+            for key in ("category", "category_name", "area", "iscrowd"):
+                if len(objects[key]) != expected_len:
+                    errors.append(f"{split}/{file_name}: objects.{key} length does not match bbox count")
+
+            width = int(row["width"])
+            height = int(row["height"])
+            for category, bbox, area in zip(objects["category"], objects["bbox"], objects["area"]):
+                if int(category) not in names:
+                    errors.append(f"{split}/{file_name}: unknown category id {category}")
+                x, y, w, h = [float(v) for v in bbox]
+                if w <= 0 or h <= 0:
+                    errors.append(f"{split}/{file_name}: non-positive bbox size {bbox}")
+                if x < 0 or y < 0 or x + w > width + 1e-3 or y + h > height + 1e-3:
+                    errors.append(f"{split}/{file_name}: bbox out of bounds {bbox}")
+                if float(area) <= 0:
+                    errors.append(f"{split}/{file_name}: non-positive area {area}")
+                class_counts[int(category)] += 1
+
+        orphan_files = sorted(files_on_disk - rows_seen)
+        if orphan_files:
+            errors.extend([f"{split}/{name}: image exists on disk but missing from parquet" for name in orphan_files[:20]])
+
+        split_summary[split] = {"images": len(rows), "files": len(files_on_disk)}
+
+    image_results = _check_images_readable(image_paths) if do_check_images else {}
+
+    logger.info("Canonical split counts: %s", split_summary)
+    for class_id in sorted(names):
+        logger.info("  %2d | %-20s | %7d", class_id, names[class_id], class_counts.get(class_id, 0))
+
+    if errors:
+        logger.warning("Found %s canonical validation issues", len(errors))
+        for err in errors[:20]:
+            logger.warning("  - %s", err)
+    else:
+        logger.info("Canonical dataset is valid.")
+
+    report = {
+        "format": "canonical",
+        "dataset": str(dataset_dir),
+        "split_summary": split_summary,
+        "class_counts": dict(class_counts),
+        "errors": errors,
+        "image_checks": image_results,
+    }
+    report_path = dataset_dir / "validation_report.json"
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Report saved: %s", report_path)
+    if errors:
+        sys.exit(1)
+
+
+def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
+    logger.info("Validating YOLO dataset: %s", dataset_dir)
 
     required = [
         dataset_dir / "data.yaml",
@@ -57,397 +159,120 @@ def check_structure(dataset_dir: Path) -> bool:
         dataset_dir / "labels" / "train",
         dataset_dir / "labels" / "val",
     ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        logger.error("Missing required YOLO paths: %s", missing)
+        sys.exit(1)
 
-    all_ok = True
-    for path in required:
-        exists = path.exists()
-        status = "✓" if exists else "✗"
-        logger.info(f"  {status} {path.relative_to(dataset_dir)}")
-        if not exists:
-            all_ok = False
-
-    return all_ok
-
-
-def check_data_yaml(dataset_dir: Path) -> Dict:
-    """Validate data.yaml contents."""
-    logger.info("─" * 50)
-    logger.info("CHECK 2: data.yaml Schema")
-    logger.info("─" * 50)
-
-    data_yaml_path = dataset_dir / "data.yaml"
-    with open(data_yaml_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    nc = cfg.get("nc", 0)
-    names = cfg.get("names", {})
-
-    logger.info(f"  Classes (nc): {nc}")
-    for cls_id, cls_name in sorted(names.items()):
-        logger.info(f"    {cls_id}: {cls_name}")
-
-    if len(names) != nc:
-        logger.error(f"  ✗ Mismatch: nc={nc} but {len(names)} names defined")
+    with open(dataset_dir / "data.yaml", "r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+    nc = int(cfg["nc"])
+    if isinstance(cfg["names"], list):
+        names = {idx: name for idx, name in enumerate(cfg["names"])}
     else:
-        logger.info(f"  ✓ Schema valid: {nc} classes")
+        names = {int(k): v for k, v in cfg["names"].items()}
 
-    return cfg
-
-
-def check_alignment(dataset_dir: Path) -> Dict[str, Dict]:
-    """Check that every image has a label and vice versa."""
-    logger.info("─" * 50)
-    logger.info("CHECK 3: Image ↔ Label Alignment")
-    logger.info("─" * 50)
-
-    results = {}
-
-    for split in ("train", "val"):
-        img_dir = dataset_dir / "images" / split
-        lbl_dir = dataset_dir / "labels" / split
-
-        images: Set[str] = set()
-        labels: Set[str] = set()
-
-        if img_dir.exists():
-            images = {
-                f.stem for f in img_dir.iterdir()
-                if f.suffix.lower() in IMAGE_EXTENSIONS
-            }
-
-        if lbl_dir.exists():
-            labels = {
-                f.stem for f in lbl_dir.iterdir()
-                if f.suffix.lower() == ".txt"
-            }
-
-        orphan_images = images - labels  # Images without labels
-        orphan_labels = labels - images  # Labels without images
-        aligned = images & labels
-
-        results[split] = {
-            "images": len(images),
-            "labels": len(labels),
-            "aligned": len(aligned),
-            "orphan_images": len(orphan_images),
-            "orphan_labels": len(orphan_labels),
-        }
-
-        status = "✓" if (orphan_images == set() and orphan_labels == set()) else "⚠"
-        logger.info(
-            f"  {status} {split:5s} │ "
-            f"{len(images):>6,d} images │ "
-            f"{len(labels):>6,d} labels │ "
-            f"{len(aligned):>6,d} aligned"
-        )
-
-        if orphan_images:
-            logger.warning(
-                f"    {len(orphan_images)} images have no label file"
-            )
-            for name in sorted(list(orphan_images))[:5]:
-                logger.warning(f"      - {name}")
-
-        if orphan_labels:
-            logger.warning(
-                f"    {len(orphan_labels)} labels have no image file"
-            )
-            for name in sorted(list(orphan_labels))[:5]:
-                logger.warning(f"      - {name}")
-
-    return results
-
-
-def check_label_integrity(dataset_dir: Path, nc: int) -> Dict:
-    """Validate all label files for format correctness."""
-    logger.info("─" * 50)
-    logger.info("CHECK 4: Label Format Integrity")
-    logger.info("─" * 50)
-
-    class_counter: Counter = Counter()
-    total_boxes = 0
     errors: List[str] = []
-    empty_labels = 0
+    class_counts: Counter = Counter()
+    image_paths: List[Path] = []
+    split_summary: Dict[str, Dict[str, int]] = {}
 
     for split in ("train", "val"):
-        lbl_dir = dataset_dir / "labels" / split
-        if not lbl_dir.exists():
-            continue
+        image_dir = dataset_dir / "images" / split
+        label_dir = dataset_dir / "labels" / split
+        image_stems = {
+            path.stem for path in image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        }
+        label_stems = {
+            path.stem for path in label_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".txt"
+        }
+        if image_stems != label_stems:
+            for name in sorted(image_stems - label_stems)[:20]:
+                errors.append(f"{split}/{name}: image missing label")
+            for name in sorted(label_stems - image_stems)[:20]:
+                errors.append(f"{split}/{name}: label missing image")
 
-        for lbl_file in sorted(lbl_dir.iterdir()):
-            if lbl_file.suffix.lower() != ".txt":
+        split_summary[split] = {"images": len(image_stems), "labels": len(label_stems)}
+
+        for image_path in image_dir.iterdir():
+            if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTENSIONS:
+                image_paths.append(image_path)
+
+        for label_path in label_dir.iterdir():
+            if not label_path.is_file() or label_path.suffix.lower() != ".txt":
                 continue
-
-            content = lbl_file.read_text(encoding="utf-8").strip()
+            content = label_path.read_text(encoding="utf-8").strip()
             if not content:
-                empty_labels += 1
+                errors.append(f"{split}/{label_path.name}: empty label file")
                 continue
-
-            for line_num, line in enumerate(content.splitlines(), 1):
-                parts = line.strip().split()
-
-                if len(parts) < 5:
-                    errors.append(
-                        f"{lbl_file.name}:{line_num} — "
-                        f"Expected ≥5 values, got {len(parts)}"
-                    )
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                parts = line.split()
+                if len(parts) != 5:
+                    errors.append(f"{split}/{label_path.name}:{line_no}: expected 5 fields")
                     continue
-
                 try:
                     cls_id = int(parts[0])
+                    coords = [float(value) for value in parts[1:]]
                 except ValueError:
-                    errors.append(
-                        f"{lbl_file.name}:{line_num} — "
-                        f"Invalid class ID: '{parts[0]}'"
-                    )
+                    errors.append(f"{split}/{label_path.name}:{line_no}: non-numeric values")
                     continue
-
                 if cls_id < 0 or cls_id >= nc:
-                    errors.append(
-                        f"{lbl_file.name}:{line_num} — "
-                        f"Class ID {cls_id} out of range [0, {nc - 1}]"
-                    )
+                    errors.append(f"{split}/{label_path.name}:{line_no}: class id {cls_id} out of range")
+                if any(value < 0.0 or value > 1.0 for value in coords):
+                    errors.append(f"{split}/{label_path.name}:{line_no}: coordinate outside [0,1]")
+                class_counts[cls_id] += 1
 
-                # Validate coordinates
-                try:
-                    coords = [float(p) for p in parts[1:5]]
-                    for j, val in enumerate(coords):
-                        if val < -0.01 or val > 1.01:  # Small tolerance
-                            errors.append(
-                                f"{lbl_file.name}:{line_num} — "
-                                f"Coordinate {j} out of range: {val:.4f}"
-                            )
-                except ValueError as e:
-                    errors.append(
-                        f"{lbl_file.name}:{line_num} — "
-                        f"Invalid coordinate: {e}"
-                    )
-                    continue
+    image_results = _check_images_readable(image_paths) if do_check_images else {}
 
-                class_counter[cls_id] += 1
-                total_boxes += 1
-
-    logger.info(f"  Total bounding boxes: {total_boxes:,d}")
-    logger.info(f"  Empty label files: {empty_labels}")
-    logger.info(f"  Format errors: {len(errors)}")
+    logger.info("YOLO split counts: %s", split_summary)
+    for class_id in sorted(names):
+        logger.info("  %2d | %-20s | %7d", class_id, names[class_id], class_counts.get(class_id, 0))
 
     if errors:
-        logger.warning("  First 10 errors:")
-        for err in errors[:10]:
-            logger.warning(f"    - {err}")
-
-    return {
-        "total_boxes": total_boxes,
-        "empty_labels": empty_labels,
-        "format_errors": len(errors),
-        "class_counts": dict(class_counter),
-    }
-
-
-def print_class_distribution(class_counts: Dict[int, int], names: Dict) -> None:
-    """Print a visual class distribution histogram."""
-    logger.info("─" * 50)
-    logger.info("CLASS DISTRIBUTION")
-    logger.info("─" * 50)
-
-    if not class_counts:
-        logger.warning("  No annotations found!")
-        return
-
-    max_count = max(class_counts.values()) if class_counts else 1
-    total = sum(class_counts.values())
-
-    for cls_id in sorted(names.keys()):
-        cls_name = names[cls_id]
-        count = class_counts.get(cls_id, 0)
-        pct = (count / total * 100) if total > 0 else 0
-        bar_len = int(count / max_count * 40) if max_count > 0 else 0
-        bar = "█" * bar_len
-
-        status = " "
-        if count == 0:
-            status = "✗"
-        elif pct < 2.0:
-            status = "⚠"
-
-        logger.info(
-            f"  {status} {cls_id:2d} │ {cls_name:20s} │ "
-            f"{count:>7,d} ({pct:5.1f}%) │ {bar}"
-        )
-
-    # Imbalance warning
-    if class_counts:
-        min_count = min(class_counts.values())
-        max_count_val = max(class_counts.values())
-        ratio = max_count_val / min_count if min_count > 0 else float("inf")
-
-        if ratio > 10:
-            logger.warning(
-                f"\n  ⚠ SEVERE CLASS IMBALANCE: "
-                f"max/min ratio = {ratio:.0f}x"
-            )
-            logger.warning(
-                "  Consider: Roboflow auto-augmentation, class weights, "
-                "or oversampling underrepresented classes."
-            )
-        elif ratio > 5:
-            logger.warning(
-                f"\n  ⚠ Moderate class imbalance: "
-                f"max/min ratio = {ratio:.0f}x"
-            )
-
-
-def check_images(dataset_dir: Path) -> Dict:
-    """Optional: verify images are readable."""
-    logger.info("─" * 50)
-    logger.info("CHECK 5: Image Readability (slow)")
-    logger.info("─" * 50)
-
-    try:
-        from PIL import Image
-    except ImportError:
-        logger.warning("  Pillow not installed, skipping image checks")
-        return {"skipped": True}
-
-    corrupt = []
-    sizes: Counter = Counter()
-    total = 0
-
-    for split in ("train", "val"):
-        img_dir = dataset_dir / "images" / split
-        if not img_dir.exists():
-            continue
-
-        for img_path in img_dir.iterdir():
-            if img_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                continue
-            total += 1
-
-            try:
-                with Image.open(img_path) as img:
-                    img.verify()
-                    sizes[f"{img.size[0]}x{img.size[1]}"] += 1
-            except Exception as e:
-                corrupt.append(f"{img_path.name}: {e}")
-
-    logger.info(f"  Checked: {total:,d} images")
-    logger.info(f"  Corrupt: {len(corrupt)}")
-
-    if corrupt:
-        for c in corrupt[:5]:
-            logger.warning(f"    - {c}")
-
-    if sizes:
-        logger.info("  Image sizes:")
-        for size, count in sizes.most_common(5):
-            logger.info(f"    {size}: {count:,d}")
-
-    return {
-        "total_checked": total,
-        "corrupt": len(corrupt),
-        "sizes": dict(sizes.most_common(10)),
-    }
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-def validate(dataset_dir: Path, do_check_images: bool = False) -> None:
-    """Run all validation checks."""
-    banner = """
-    ╔══════════════════════════════════════════════════════════╗
-    ║   KRISHI VAIDYA — Bouncer Dataset Validator v1.0        ║
-    ╚══════════════════════════════════════════════════════════╝
-    """
-    logger.info(banner)
-    logger.info(f"  Dataset: {dataset_dir.resolve()}")
-
-    if not dataset_dir.exists():
-        logger.error(f"Dataset directory does not exist: {dataset_dir}")
-        sys.exit(1)
-
-    # Run checks
-    structure_ok = check_structure(dataset_dir)
-    if not structure_ok:
-        logger.error("Structure check failed. Cannot continue.")
-        sys.exit(1)
-
-    cfg = check_data_yaml(dataset_dir)
-    nc = cfg.get("nc", 10)
-    names = cfg.get("names", {})
-
-    alignment = check_alignment(dataset_dir)
-    integrity = check_label_integrity(dataset_dir, nc)
-    print_class_distribution(integrity.get("class_counts", {}), names)
-
-    image_results = {}
-    if do_check_images:
-        image_results = check_images(dataset_dir)
-
-    # Summary
-    logger.info("═" * 50)
-    logger.info("VALIDATION SUMMARY")
-    logger.info("═" * 50)
-
-    total_images = sum(
-        a["images"] for a in alignment.values()
-    )
-    total_aligned = sum(
-        a["aligned"] for a in alignment.values()
-    )
-    total_boxes = integrity.get("total_boxes", 0)
-    total_errors = integrity.get("format_errors", 0)
-
-    logger.info(f"  Total images:      {total_images:>8,d}")
-    logger.info(f"  Aligned pairs:     {total_aligned:>8,d}")
-    logger.info(f"  Total annotations: {total_boxes:>8,d}")
-    logger.info(f"  Format errors:     {total_errors:>8,d}")
-
-    if total_errors == 0 and total_images == total_aligned and total_boxes > 0:
-        logger.info("")
-        logger.info("  ✓ DATASET IS VALID — Ready for training.")
-        logger.info("")
-        logger.info("  Train with:")
-        logger.info(f"    yolo detect train data={dataset_dir / 'data.yaml'} model=yolov8n.pt epochs=50 imgsz=640")
+        logger.warning("Found %s YOLO validation issues", len(errors))
+        for err in errors[:20]:
+            logger.warning("  - %s", err)
     else:
-        logger.warning("")
-        logger.warning("  ⚠ ISSUES DETECTED — Review the warnings above before training.")
+        logger.info("YOLO dataset is valid.")
 
-    # Save validation report
     report = {
-        "dataset": str(dataset_dir.resolve()),
-        "structure_ok": structure_ok,
-        "alignment": alignment,
-        "integrity": integrity,
+        "format": "yolo",
+        "dataset": str(dataset_dir),
+        "split_summary": split_summary,
+        "class_counts": dict(class_counts),
+        "errors": errors,
         "image_checks": image_results,
     }
-
     report_path = dataset_dir / "validation_report.json"
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("Report saved: %s", report_path)
+    if errors:
+        sys.exit(1)
 
-    logger.info(f"  Report saved: {report_path}")
 
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Validate a Krishi Vaidya bouncer dataset"
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Validate canonical or YOLO dataset outputs")
+    parser.add_argument("--dataset", type=Path, required=True, help="Dataset root path")
     parser.add_argument(
-        "--dataset",
-        type=Path,
-        default=PROJECT_ROOT / "krishi_bouncer_dataset",
-        help="Path to the dataset directory",
+        "--format",
+        choices=("canonical", "yolo"),
+        default="yolo",
+        help="Dataset format to validate",
     )
     parser.add_argument(
         "--check-images",
         action="store_true",
-        help="Also verify image file readability (slower)",
+        help="Also verify that image files are readable",
     )
-
     args = parser.parse_args()
-    validate(args.dataset, do_check_images=args.check_images)
+
+    dataset_dir = resolve_dataset_path(args.dataset)
+    if args.format == "canonical":
+        validate_canonical(dataset_dir, do_check_images=args.check_images)
+    else:
+        validate_yolo(dataset_dir, do_check_images=args.check_images)
 
 
 if __name__ == "__main__":

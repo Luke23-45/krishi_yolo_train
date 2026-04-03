@@ -44,7 +44,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from scripts.adapters.base import BaseAdapter
+from scripts.adapters.base import BaseAdapter, CanonicalObject, CanonicalSample
 
 logger = logging.getLogger("krishi.adapter.yolo")
 
@@ -64,12 +64,13 @@ class YOLOAdapter(BaseAdapter):
 
         self.ensure_staging_dirs(staging_dir)
         lookup = self.build_class_map_lookup(class_map)
+        default_master_id = self.infer_single_target_class(class_map)
 
         # 1. Discover native class names from data.yaml (if present)
         native_names = self._load_native_classes(source_dir)
 
         # 2. Build native_id → master_id remapping table
-        id_remap = self._build_id_remap(native_names, lookup)
+        id_remap = self._build_id_remap(native_names, lookup, default_master_id)
 
         # 3. Discover directory layout
         splits = self._discover_splits(source_dir, split_strategy)
@@ -79,6 +80,8 @@ class YOLOAdapter(BaseAdapter):
             "labels_written": 0,
             "classes_found": {},
             "unmapped_classes": [],
+            "auto_mapped_classes": [],
+            "samples": [],
             "errors": 0,
         }
 
@@ -119,19 +122,35 @@ class YOLOAdapter(BaseAdapter):
         for img_path, label_path, split in all_items:
             try:
                 new_name = self.build_output_name(source_name, img_path, source_dir)
-                label_name = Path(new_name).with_suffix(".txt").name
+                width, height = self.get_image_size(img_path)
 
                 # Remap label
-                remapped_lines = []
+                remapped_objects: List[CanonicalObject] = []
                 if label_path is not None and label_path.exists():
-                    remapped_lines = self._remap_label_file(
-                        label_path, id_remap, native_names, lookup, stats
+                    remapped_objects = self._remap_label_file(
+                        label_path,
+                        id_remap,
+                        native_names,
+                        lookup,
+                        stats,
+                        default_master_id,
+                        width,
+                        height,
                     )
 
                 # Only copy if we have at least one valid annotation
-                if remapped_lines:
-                    self.copy_image(img_path, staging_dir, split, new_name)
-                    self.write_label(staging_dir, split, label_name, remapped_lines)
+                if remapped_objects:
+                    sample = CanonicalSample(
+                        image_id=Path(new_name).stem,
+                        image_path=str(img_path.resolve()),
+                        output_file_name=new_name,
+                        width=width,
+                        height=height,
+                        split=split,
+                        objects=remapped_objects,
+                        source_name=source_name,
+                    )
+                    stats["samples"].append(sample)
                     stats["images_processed"] += 1
                     stats["labels_written"] += 1
                 else:
@@ -153,6 +172,11 @@ class YOLOAdapter(BaseAdapter):
                 f"[{source_name}] Unmapped classes encountered: "
                 f"{list(set(stats['unmapped_classes']))}"
             )
+        if stats["auto_mapped_classes"]:
+            logger.info(
+                f"[{source_name}] Auto-mapped variant classes: "
+                f"{list(set(stats['auto_mapped_classes']))}"
+            )
 
         return stats
 
@@ -170,8 +194,16 @@ class YOLOAdapter(BaseAdapter):
             source_dir / "data.yml",
             source_dir / "dataset.yaml",
         ]
+        candidates.extend(sorted(source_dir.rglob("data.yaml")))
+        candidates.extend(sorted(source_dir.rglob("data.yml")))
+        candidates.extend(sorted(source_dir.rglob("dataset.yaml")))
 
+        seen = set()
         for yaml_path in candidates:
+            yaml_path = yaml_path.resolve()
+            if yaml_path in seen:
+                continue
+            seen.add(yaml_path)
             if yaml_path.exists():
                 try:
                     with open(yaml_path, "r", encoding="utf-8") as f:
@@ -192,6 +224,7 @@ class YOLOAdapter(BaseAdapter):
         self,
         native_names: Dict[int, str],
         lookup: Dict[str, int],
+        default_master_id: Optional[int],
     ) -> Dict[int, Optional[int]]:
         """
         Build {native_class_id: master_class_id} mapping.
@@ -203,13 +236,8 @@ class YOLOAdapter(BaseAdapter):
 
         if native_names:
             for native_id, native_name in native_names.items():
-                key = native_name.lower().strip()
-                master_id = lookup.get(key)
-                if master_id is None:
-                    # Try without underscores/spaces
-                    master_id = lookup.get(key.replace("_", " "))
-                if master_id is None:
-                    master_id = lookup.get(key.replace(" ", "_"))
+                key = self.normalize_class_name(native_name)
+                master_id = lookup.get(key, default_master_id)
                 remap[native_id] = master_id
         else:
             # No data.yaml — try direct integer matching
@@ -228,12 +256,15 @@ class YOLOAdapter(BaseAdapter):
         native_names: Dict[int, str],
         lookup: Dict[str, int],
         stats: Dict,
-    ) -> List[str]:
+        default_master_id: Optional[int],
+        width: int,
+        height: int,
+    ) -> List[CanonicalObject]:
         """
         Read a YOLO label file and remap class IDs.
         Returns list of remapped lines (drops unmapped classes).
         """
-        remapped = []
+        remapped: List[CanonicalObject] = []
 
         for line in label_path.read_text(encoding="utf-8").strip().splitlines():
             parts = line.strip().split()
@@ -251,10 +282,10 @@ class YOLOAdapter(BaseAdapter):
             if master_id is None and native_id not in id_remap:
                 # Dynamic fallback: try matching the native name
                 native_name = native_names.get(native_id, str(native_id))
-                key = native_name.lower().strip()
-                master_id = lookup.get(key) or lookup.get(
-                    key.replace("_", " ")
-                ) or lookup.get(key.replace(" ", "_"))
+                key = self.normalize_class_name(native_name)
+                master_id = lookup.get(key, default_master_id)
+                if master_id is not None and key not in lookup:
+                    stats["auto_mapped_classes"].append(native_name)
                 # Cache for future lookups
                 id_remap[native_id] = master_id
 
@@ -264,13 +295,23 @@ class YOLOAdapter(BaseAdapter):
                 stats["unmapped_classes"].append(native_name)
                 continue
 
+            coco_bbox = self.yolo_bbox_to_coco(parts, width, height)
+            if coco_bbox is None:
+                continue
+
             # Track class distribution
             stats["classes_found"][master_id] = (
                 stats["classes_found"].get(master_id, 0) + 1
             )
 
-            # Rebuild line with remapped class ID
-            remapped.append(f"{master_id} {' '.join(parts[1:])}")
+            remapped.append(
+                CanonicalObject(
+                    bbox=coco_bbox,
+                    category=master_id,
+                    category_name="",
+                    area=round(coco_bbox[2] * coco_bbox[3], 4),
+                )
+            )
 
         return remapped
 
@@ -286,25 +327,25 @@ class YOLOAdapter(BaseAdapter):
         splits = {}
 
         # Layout A: source_dir/images/{train,val}/ + source_dir/labels/{train,val}/
-        for split_name in ("train", "val", "valid", "test"):
+        for split_name in ("train", "val", "valid", "validation", "test"):
             img_dir = source_dir / "images" / split_name
             lbl_dir = source_dir / "labels" / split_name
 
             if img_dir.exists():
-                actual_split = "val" if split_name in ("valid", "val") else split_name
+                actual_split = self._normalize_split_name(split_name)
                 splits[actual_split] = (img_dir, lbl_dir if lbl_dir.exists() else None)
 
         if splits:
             return splits
 
         # Layout B: source_dir/{train,valid}/{images,labels}/
-        for split_name in ("train", "val", "valid", "test"):
+        for split_name in ("train", "val", "valid", "validation", "test"):
             split_dir = source_dir / split_name
             if split_dir.exists():
                 img_dir = split_dir / "images"
                 lbl_dir = split_dir / "labels"
                 if img_dir.exists():
-                    actual_split = "val" if split_name in ("valid", "val") else split_name
+                    actual_split = self._normalize_split_name(split_name)
                     splits[actual_split] = (img_dir, lbl_dir if lbl_dir.exists() else None)
 
         if splits:
@@ -325,6 +366,17 @@ class YOLOAdapter(BaseAdapter):
 
         logger.error(f"Could not discover any valid layout in {source_dir}")
         return {}
+
+    @staticmethod
+    def _normalize_split_name(split_name: str) -> str:
+        """
+        Collapse source-specific split names into the standard YOLO layout.
+        Final datasets should only contain train/val directories.
+        """
+        normalized = split_name.lower().strip()
+        if normalized in {"val", "valid", "validation", "test"}:
+            return "val"
+        return "train"
 
     @staticmethod
     def _find_label(img_path: Path, lbl_dir: Optional[Path]) -> Optional[Path]:

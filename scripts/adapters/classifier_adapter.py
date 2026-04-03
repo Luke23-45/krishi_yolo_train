@@ -37,7 +37,7 @@ import random
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from scripts.adapters.base import BaseAdapter
+from scripts.adapters.base import BaseAdapter, CanonicalObject, CanonicalSample
 
 logger = logging.getLogger("krishi.adapter.classifier")
 
@@ -63,6 +63,7 @@ class ClassifierAdapter(BaseAdapter):
             "labels_written": 0,
             "classes_found": {},
             "unmapped_classes": [],
+            "samples": [],
             "errors": 0,
         }
 
@@ -123,13 +124,26 @@ class ClassifierAdapter(BaseAdapter):
 
             try:
                 new_name = self.build_output_name(source_name, img_path, source_dir)
-                label_name = Path(new_name).with_suffix(".txt").name
-
-                # Full-frame bounding box: center=(0.5, 0.5), size=(1.0, 1.0)
-                yolo_line = f"{master_id} 0.500000 0.500000 1.000000 1.000000"
-
-                self.copy_image(img_path, staging_dir, split, new_name)
-                self.write_label(staging_dir, split, label_name, [yolo_line])
+                width, height = self.get_image_size(img_path)
+                bbox = [0.0, 0.0, float(width), float(height)]
+                sample = CanonicalSample(
+                    image_id=Path(new_name).stem,
+                    image_path=str(img_path.resolve()),
+                    output_file_name=new_name,
+                    width=width,
+                    height=height,
+                    split=split,
+                    objects=[
+                        CanonicalObject(
+                            bbox=bbox,
+                            category=master_id,
+                            category_name="",
+                            area=round(float(width) * float(height), 4),
+                        )
+                    ],
+                    source_name=source_name,
+                )
+                stats["samples"].append(sample)
 
                 stats["images_processed"] += 1
                 stats["labels_written"] += 1

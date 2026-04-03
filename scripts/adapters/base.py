@@ -15,11 +15,64 @@ from __future__ import annotations
 import abc
 import hashlib
 import logging
+import re
 import shutil
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger("krishi.adapter")
+
+
+@dataclass
+class CanonicalObject:
+    """One canonical object annotation in COCO xywh pixel format."""
+
+    bbox: List[float]
+    category: int
+    category_name: str
+    area: float
+    iscrowd: int = 0
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+@dataclass
+class CanonicalSample:
+    """One canonical image record for the Hugging Face dataset."""
+
+    image_id: str
+    image_path: str
+    output_file_name: str
+    width: int
+    height: int
+    split: str
+    objects: List[CanonicalObject]
+    source_name: str
+    source_type: str = ""
+    source_handle: str = ""
+
+    def to_metadata_row(self, sha256: str) -> Dict:
+        return {
+            "image_id": self.image_id,
+            "file_name": self.output_file_name,
+            "width": self.width,
+            "height": self.height,
+            "source_name": self.source_name,
+            "source_type": self.source_type,
+            "source_handle": self.source_handle,
+            "split": self.split,
+            "objects": {
+                "bbox": [obj.bbox for obj in self.objects],
+                "category": [obj.category for obj in self.objects],
+                "category_name": [obj.category_name for obj in self.objects],
+                "area": [obj.area for obj in self.objects],
+                "iscrowd": [obj.iscrowd for obj in self.objects],
+            },
+            "num_objects": len(self.objects),
+            "sha256": sha256,
+        }
 
 
 class BaseAdapter(abc.ABC):
@@ -173,4 +226,97 @@ class BaseAdapter(abc.ABC):
             lookup[key_str.replace("_", " ")] = int(value)
             lookup[key_str.replace(" ", "_")] = int(value)
             lookup[key_str.replace("-", "_")] = int(value)
+            lookup[BaseAdapter.normalize_class_name(key_str)] = int(value)
         return lookup
+
+    @staticmethod
+    def normalize_class_name(name: str) -> str:
+        """Normalize class labels from different tools into a stable key."""
+        normalized = re.sub(r"[\W_]+", " ", str(name).lower()).strip()
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
+
+    @staticmethod
+    def infer_single_target_class(class_map: Dict) -> int | None:
+        """
+        If a source maps every native class to the same master class,
+        unseen label variants can safely fall back to that target.
+        """
+        targets = {int(value) for value in class_map.values()}
+        if len(targets) == 1:
+            return next(iter(targets))
+        return None
+
+    @staticmethod
+    def get_image_size(image_path: Path) -> tuple[int, int]:
+        """Read image width and height."""
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError(
+                "Pillow is required for canonical dataset generation. "
+                "Install with: pip install Pillow"
+            ) from exc
+
+        with Image.open(image_path) as img:
+            width, height = img.size
+        return int(width), int(height)
+
+    @staticmethod
+    def yolo_bbox_to_coco(parts: List[str], width: int, height: int) -> Optional[List[float]]:
+        """Convert YOLO normalized xywh values to COCO pixel xywh."""
+        if len(parts) < 5:
+            return None
+
+        try:
+            x_center = float(parts[1])
+            y_center = float(parts[2])
+            box_w = float(parts[3])
+            box_h = float(parts[4])
+        except ValueError:
+            return None
+
+        x = (x_center - box_w / 2.0) * width
+        y = (y_center - box_h / 2.0) * height
+        w = box_w * width
+        h = box_h * height
+
+        x = max(0.0, min(float(width), x))
+        y = max(0.0, min(float(height), y))
+        w = max(0.0, min(float(width), w))
+        h = max(0.0, min(float(height), h))
+
+        if w <= 0.0 or h <= 0.0:
+            return None
+
+        return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+
+    @staticmethod
+    def sanitize_coco_bbox(
+        bbox: List[float],
+        width: int,
+        height: int,
+    ) -> Optional[List[float]]:
+        """Clamp a COCO xywh pixel bbox to image bounds."""
+        if len(bbox) != 4:
+            return None
+
+        try:
+            x, y, w, h = [float(v) for v in bbox]
+        except ValueError:
+            return None
+
+        if w <= 0.0 or h <= 0.0:
+            return None
+
+        x1 = max(0.0, min(float(width), x))
+        y1 = max(0.0, min(float(height), y))
+        x2 = max(0.0, min(float(width), x + w))
+        y2 = max(0.0, min(float(height), y + h))
+
+        new_w = x2 - x1
+        new_h = y2 - y1
+        if new_w <= 0.0 or new_h <= 0.0:
+            return None
+
+        return [round(x1, 4), round(y1, 4), round(new_w, 4), round(new_h, 4)]
