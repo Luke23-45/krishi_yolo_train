@@ -26,6 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("krishi.validate")
 
+YOLO_EPSILON = 1e-6
+
 
 def resolve_dataset_path(path_value: str | Path) -> Path:
     expanded = Path(str(path_value)).expanduser()
@@ -242,12 +244,12 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
                     continue
                 if cls_id < 0 or cls_id >= nc:
                     errors.append(f"{split}/{label_path.name}:{line_no}: class id {cls_id} out of range")
-                if any(value < 0.0 or value > 1.0 for value in coords):
+                if any(value < -YOLO_EPSILON or value > 1.0 + YOLO_EPSILON for value in coords):
                     errors.append(f"{split}/{label_path.name}:{line_no}: coordinate outside [0,1]")
                 x_center, y_center, box_w, box_h = coords
-                if (x_center - box_w / 2.0) < 0.0 or (x_center + box_w / 2.0) > 1.0:
+                if (x_center - box_w / 2.0) < -YOLO_EPSILON or (x_center + box_w / 2.0) > 1.0 + YOLO_EPSILON:
                     errors.append(f"{split}/{label_path.name}:{line_no}: x bbox extends outside image")
-                if (y_center - box_h / 2.0) < 0.0 or (y_center + box_h / 2.0) > 1.0:
+                if (y_center - box_h / 2.0) < -YOLO_EPSILON or (y_center + box_h / 2.0) > 1.0 + YOLO_EPSILON:
                     errors.append(f"{split}/{label_path.name}:{line_no}: y bbox extends outside image")
                 class_counts[cls_id] += 1
 

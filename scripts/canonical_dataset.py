@@ -19,6 +19,16 @@ import yaml
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
+def _configure_quiet_hf_io() -> None:
+    """
+    Disable Hugging Face / tqdm progress bars so large uploads and downloads do
+    not spam notebook or terminal output with one line per file.
+    """
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    os.environ.setdefault("DISABLE_TQDM", "1")
+
+
 def _require_pyarrow():
     try:
         import pyarrow as pa
@@ -32,13 +42,20 @@ def _require_pyarrow():
 
 
 def _require_hf_hub():
+    _configure_quiet_hf_io()
     try:
         from huggingface_hub import HfApi
+        try:
+            from huggingface_hub.utils import disable_progress_bars
+        except ImportError:
+            disable_progress_bars = None
     except ImportError as exc:
         raise RuntimeError(
             "huggingface_hub is required for packaging and upload. "
             "Install with: pip install huggingface_hub"
         ) from exc
+    if disable_progress_bars is not None:
+        disable_progress_bars()
     return HfApi
 
 
