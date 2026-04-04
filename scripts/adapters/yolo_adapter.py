@@ -295,21 +295,22 @@ class YOLOAdapter(BaseAdapter):
                 stats["unmapped_classes"].append(native_name)
                 continue
 
-            coco_bbox = self.yolo_bbox_to_coco(parts, width, height)
-            if coco_bbox is None:
-                continue
+            inspected = self.inspect_yolo_bbox(parts, width, height)
+            sanitized_bbox = inspected["sanitized_bbox"] or []
 
-            # Track class distribution
             stats["classes_found"][master_id] = (
                 stats["classes_found"].get(master_id, 0) + 1
             )
 
             remapped.append(
                 CanonicalObject(
-                    bbox=coco_bbox,
+                    bbox=sanitized_bbox,
                     category=master_id,
                     category_name="",
-                    area=round(coco_bbox[2] * coco_bbox[3], 4),
+                    area=round(sanitized_bbox[2] * sanitized_bbox[3], 4) if sanitized_bbox else 0.0,
+                    raw_bbox=inspected["raw_bbox"],
+                    quality_flags=inspected["quality_flags"],
+                    valid_geometry=bool(inspected["valid_geometry"]),
                 )
             )
 

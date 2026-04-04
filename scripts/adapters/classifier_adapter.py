@@ -139,6 +139,9 @@ class ClassifierAdapter(BaseAdapter):
                             category=master_id,
                             category_name="",
                             area=round(float(width) * float(height), 4),
+                            raw_bbox=list(bbox),
+                            quality_flags=[],
+                            valid_geometry=True,
                         )
                     ],
                     source_name=source_name,

@@ -88,6 +88,7 @@ def build_dataset_card(
     canonical_root: Path,
     split_counts: Dict[str, int],
     class_distribution: Dict[int, int],
+    curation_summary: Dict | None = None,
 ) -> str:
     names = schema["names"]
     missing = [names[idx] for idx in range(schema["nc"]) if idx not in class_distribution]
@@ -139,6 +140,16 @@ def build_dataset_card(
     lines.extend(["", "## Notes", ""])
     lines.append("- Bounding boxes are stored in COCO pixel xywh format.")
     lines.append("- YOLO labels are exported from this canonical dataset, not stored as the master archive.")
+    if curation_summary:
+        threshold = curation_summary.get("strict_class_threshold")
+        strict_classes = curation_summary.get("strict_classes", [])
+        dropped_images = curation_summary.get("dropped_images", 0)
+        strict_label = ", ".join(strict_classes) if strict_classes else "none"
+        lines.append(
+            f"- Adaptive curation was applied with strict mode for classes above {threshold} candidate objects."
+        )
+        lines.append(f"- Strict classes in this materialization: {strict_label}.")
+        lines.append(f"- Images dropped during curation: {dropped_images}.")
     if missing:
         lines.append(f"- Missing classes in this materialization: {', '.join(missing)}")
 
@@ -151,10 +162,18 @@ def write_dataset_card(
     source_stats: Sequence[Dict],
     split_counts: Dict[str, int],
     class_distribution: Dict[int, int],
+    curation_summary: Dict | None = None,
 ) -> Path:
     path = root / "README.md"
     path.write_text(
-        build_dataset_card(schema, source_stats, root, split_counts, class_distribution),
+        build_dataset_card(
+            schema,
+            source_stats,
+            root,
+            split_counts,
+            class_distribution,
+            curation_summary=curation_summary,
+        ),
         encoding="utf-8",
     )
     return path
@@ -282,7 +301,7 @@ def export_yolo_from_canonical(dataset_root: Path, output_root: Path) -> Dict[st
                 )
             label_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             stats[f"{split}_images"] += 1
-            stats["total_labels"] += 1
+            stats["total_labels"] += len(lines)
 
     write_yolo_data_yaml(output_root, names)
     return stats

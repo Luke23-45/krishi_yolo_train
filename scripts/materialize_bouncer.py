@@ -7,10 +7,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -41,6 +42,16 @@ logging.basicConfig(
 logger = logging.getLogger("krishi.materialize")
 
 
+DEFAULT_CURATION = {
+    "enabled": True,
+    "strict_class_threshold": 2000,
+    "strict_drop_policy": "image",
+    "min_bbox_area_pixels": 16.0,
+    "min_bbox_area_ratio": 0.0001,
+    "report_top_failures": 20,
+}
+
+
 def load_config(config_path: Path) -> Dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
@@ -68,6 +79,21 @@ def resolve_configured_path(path_value: str | Path) -> Path:
     if expanded.is_absolute():
         return expanded
     return (PROJECT_ROOT / expanded).resolve()
+
+
+def load_curation_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    curation = dict(DEFAULT_CURATION)
+    curation.update(cfg.get("curation", {}) or {})
+    curation["enabled"] = bool(curation.get("enabled", True))
+    curation["strict_class_threshold"] = int(curation.get("strict_class_threshold", 2000))
+    curation["min_bbox_area_pixels"] = float(curation.get("min_bbox_area_pixels", 16.0))
+    curation["min_bbox_area_ratio"] = float(curation.get("min_bbox_area_ratio", 0.0001))
+    curation["report_top_failures"] = int(curation.get("report_top_failures", 20))
+    policy = str(curation.get("strict_drop_policy", "image")).strip().lower()
+    if policy != "image":
+        raise ValueError("Only strict_drop_policy=image is supported in this version.")
+    curation["strict_drop_policy"] = policy
+    return curation
 
 
 def check_canonical_integrity(output_dir: Path, schema: Dict) -> bool:
@@ -245,12 +271,162 @@ def validate_local_path(path_str: str, source_name: str) -> Path:
     return path
 
 
+def _evaluate_object_quality(obj: Any, sample: Any, curation_cfg: Dict[str, Any]) -> List[str]:
+    reasons = list(dict.fromkeys(getattr(obj, "quality_flags", []) or []))
+    bbox = getattr(obj, "bbox", []) or []
+    raw_bbox = getattr(obj, "raw_bbox", []) or []
+
+    if len(raw_bbox) == 4 and any(not math.isfinite(float(v)) for v in raw_bbox):
+        reasons.append("nan")
+
+    if not getattr(obj, "valid_geometry", False) or len(bbox) != 4:
+        if "collapsed_after_clamp" not in reasons and "malformed" not in reasons:
+            reasons.append("invalid_geometry")
+        return list(dict.fromkeys(reasons))
+
+    area = float(bbox[2]) * float(bbox[3])
+    image_area = max(1.0, float(sample.width) * float(sample.height))
+
+    if area < float(curation_cfg["min_bbox_area_pixels"]):
+        reasons.append("too_small_pixels")
+    if (area / image_area) < float(curation_cfg["min_bbox_area_ratio"]):
+        reasons.append("too_small_ratio")
+
+    return list(dict.fromkeys(reasons))
+
+
+def curate_samples(
+    samples: List[Any],
+    schema: Dict,
+    curation_cfg: Dict[str, Any],
+) -> tuple[List[Any], Dict[str, Any]]:
+    candidate_object_counts: Counter = Counter()
+    for sample in samples:
+        for obj in sample.objects:
+            candidate_object_counts[int(obj.category)] += 1
+
+    strict_classes = {
+        class_id
+        for class_id, count in candidate_object_counts.items()
+        if count > curation_cfg["strict_class_threshold"]
+    }
+
+    curated_samples: List[Any] = []
+    dropped_images_by_class: Counter = Counter()
+    dropped_images_by_source: Counter = Counter()
+    dropped_objects_by_reason: Counter = Counter()
+    dropped_objects_by_class: Counter = Counter()
+    dropped_objects_total = 0
+    dropped_images_total = 0
+    failure_examples: List[Dict[str, Any]] = []
+
+    for sample in samples:
+        keep_objects = []
+        strict_failure_reasons: Dict[int, List[str]] = {}
+
+        for obj in sample.objects:
+            reasons = _evaluate_object_quality(obj, sample, curation_cfg)
+            is_strict_class = int(obj.category) in strict_classes
+
+            if is_strict_class and reasons:
+                strict_failure_reasons.setdefault(int(obj.category), []).extend(reasons)
+                continue
+
+            permissive_reasons = [
+                reason
+                for reason in reasons
+                if reason not in {"out_of_bounds", "truncated_after_clamp"}
+            ]
+            if permissive_reasons:
+                dropped_objects_total += 1
+                dropped_objects_by_class[int(obj.category)] += 1
+                for reason in permissive_reasons:
+                    dropped_objects_by_reason[reason] += 1
+                if len(failure_examples) < curation_cfg["report_top_failures"]:
+                    failure_examples.append(
+                        {
+                            "source_name": sample.source_name,
+                            "image_id": sample.image_id,
+                            "class_name": schema["names"][int(obj.category)],
+                            "mode": "permissive-object-drop",
+                            "reasons": permissive_reasons,
+                        }
+                    )
+                continue
+
+            keep_objects.append(obj)
+
+        if strict_failure_reasons:
+            dropped_images_total += 1
+            dropped_images_by_source[sample.source_name] += 1
+            for class_id, reasons in strict_failure_reasons.items():
+                dropped_images_by_class[class_id] += 1
+                for reason in reasons:
+                    dropped_objects_by_reason[reason] += 1
+                    dropped_objects_total += 1
+                if len(failure_examples) < curation_cfg["report_top_failures"]:
+                    failure_examples.append(
+                        {
+                            "source_name": sample.source_name,
+                            "image_id": sample.image_id,
+                            "class_name": schema["names"][class_id],
+                            "mode": "strict-image-drop",
+                            "reasons": list(dict.fromkeys(reasons)),
+                        }
+                    )
+            continue
+
+        if not keep_objects:
+            dropped_images_total += 1
+            dropped_images_by_source[sample.source_name] += 1
+            continue
+
+        sample.objects = keep_objects
+        curated_samples.append(sample)
+
+    final_distribution: Counter = Counter()
+    for sample in curated_samples:
+        for obj in sample.objects:
+            final_distribution[int(obj.category)] += 1
+
+    summary = {
+        "enabled": curation_cfg["enabled"],
+        "strict_class_threshold": curation_cfg["strict_class_threshold"],
+        "strict_drop_policy": curation_cfg["strict_drop_policy"],
+        "min_bbox_area_pixels": curation_cfg["min_bbox_area_pixels"],
+        "min_bbox_area_ratio": curation_cfg["min_bbox_area_ratio"],
+        "candidate_images": len(samples),
+        "candidate_objects": int(sum(candidate_object_counts.values())),
+        "candidate_class_distribution": dict(sorted(candidate_object_counts.items())),
+        "strict_classes": [schema["names"][class_id] for class_id in sorted(strict_classes)],
+        "strict_class_ids": sorted(strict_classes),
+        "dropped_images": dropped_images_total,
+        "dropped_images_by_class": {
+            schema["names"][class_id]: count
+            for class_id, count in sorted(dropped_images_by_class.items())
+        },
+        "dropped_images_by_source": dict(sorted(dropped_images_by_source.items())),
+        "dropped_objects": dropped_objects_total,
+        "dropped_objects_by_reason": dict(sorted(dropped_objects_by_reason.items())),
+        "dropped_objects_by_class": {
+            schema["names"][class_id]: count
+            for class_id, count in sorted(dropped_objects_by_class.items())
+        },
+        "final_images": len(curated_samples),
+        "final_objects": int(sum(final_distribution.values())),
+        "final_class_distribution": dict(sorted(final_distribution.items())),
+        "failure_examples": failure_examples,
+    }
+    return curated_samples, summary
+
+
 def _materialize_canonical_dataset(
     canonical_root: Path,
     samples: List[Any],
     schema: Dict,
     source_stats: List[Dict],
     sources_cfg: List[Dict],
+    curation_summary: Dict[str, Any],
 ) -> Dict[str, Any]:
     if canonical_root.exists():
         import shutil
@@ -283,7 +459,14 @@ def _materialize_canonical_dataset(
 
     write_classes_json(canonical_root, schema)
     write_licenses_json(canonical_root, sources_cfg)
-    write_dataset_card(canonical_root, schema, source_stats, split_counts, dict(class_distribution))
+    write_dataset_card(
+        canonical_root,
+        schema,
+        source_stats,
+        split_counts,
+        dict(class_distribution),
+        curation_summary=curation_summary,
+    )
 
     return {
         "train_images": split_counts["train"],
@@ -302,6 +485,7 @@ def generate_report(
     source_stats: List[Dict],
     canonical_stats: Dict[str, Any],
     yolo_stats: Dict[str, Any],
+    curation_stats: Dict[str, Any],
     elapsed: float,
 ) -> Path:
     report = {
@@ -309,6 +493,7 @@ def generate_report(
         "canonical_output_dir": str(canonical_root.resolve()),
         "elapsed_seconds": round(elapsed, 1),
         "sources": _sanitize_source_stats(source_stats),
+        "curation": curation_stats,
         "canonical": canonical_stats,
         "yolo": yolo_stats,
     }
@@ -343,6 +528,7 @@ def materialize(
     cfg = load_config(config_path)
     schema = cfg["schema"]
     output_cfg = cfg["output"]
+    curation_cfg = load_curation_config(cfg)
     sources = cfg["sources"]
 
     canonical_root = resolve_configured_path(output_cfg.get("canonical_root", "hf_dataset"))
@@ -353,6 +539,11 @@ def materialize(
 
     logger.info("Config loaded: %s/%s sources enabled", len(enabled), len(sources))
     logger.info("Schema: %s classes", schema["nc"])
+    logger.info(
+        "Adaptive curation: %s (strict threshold=%s)",
+        "enabled" if curation_cfg["enabled"] else "disabled",
+        curation_cfg["strict_class_threshold"],
+    )
     logger.info("Canonical output: %s", canonical_root)
     logger.info("YOLO output: %s", yolo_root)
     logger.info("Output format: %s", output_format)
@@ -441,6 +632,27 @@ def materialize(
         logger.error("=" * 60)
         sys.exit(1)
 
+    curation_stats: Dict[str, Any] = {}
+    if curation_cfg["enabled"]:
+        logger.info("-" * 60)
+        logger.info("CURATING SAMPLES")
+        logger.info("-" * 60)
+        all_samples, curation_stats = curate_samples(all_samples, schema, curation_cfg)
+        logger.info(
+            "  Curation kept %s/%s images and %s/%s objects",
+            curation_stats.get("final_images", 0),
+            curation_stats.get("candidate_images", 0),
+            curation_stats.get("final_objects", 0),
+            curation_stats.get("candidate_objects", 0),
+        )
+        if curation_stats.get("strict_classes"):
+            logger.info("  Strict classes: %s", curation_stats["strict_classes"])
+        if curation_stats.get("dropped_images"):
+            logger.info("  Dropped images: %s", curation_stats["dropped_images"])
+        if not all_samples:
+            logger.error("FATAL: Curation removed every sample. Adjust the thresholds or source config.")
+            sys.exit(1)
+
     canonical_stats: Dict[str, Any] = {}
     yolo_stats: Dict[str, Any] = {}
 
@@ -454,6 +666,7 @@ def materialize(
             schema=schema,
             source_stats=_sanitize_source_stats(source_stats),
             sources_cfg=enabled,
+            curation_summary=curation_stats,
         )
 
     if output_format in {"yolo", "both"}:
@@ -468,7 +681,14 @@ def materialize(
         )
 
     elapsed = time.time() - start_time
-    report_path = generate_report(canonical_root, source_stats, canonical_stats, yolo_stats, elapsed)
+    report_path = generate_report(
+        canonical_root,
+        source_stats,
+        canonical_stats,
+        yolo_stats,
+        curation_stats,
+        elapsed,
+    )
 
     logger.info("=" * 60)
     logger.info("MATERIALIZATION COMPLETE")
@@ -476,9 +696,12 @@ def materialize(
     logger.info("  Canonical dataset: %s", canonical_root)
     if yolo_stats:
         logger.info("  YOLO dataset:      %s", yolo_root)
-    logger.info("  Images:            %s", total_processed)
+    logger.info("  Images:            %s", canonical_stats.get("total_images", 0))
     logger.info("  Elapsed:           %.1fs", elapsed)
     logger.info("  Report:            %s", report_path)
+
+    if curation_stats:
+        logger.info("  Curation dropped:  %s images / %s objects", curation_stats.get("dropped_images", 0), curation_stats.get("dropped_objects", 0))
 
     logger.info("")
     logger.info("  CLASS DISTRIBUTION:")

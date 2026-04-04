@@ -2,7 +2,7 @@
 # Krishi Vaidya — Bouncer Data Pipeline Configuration
 # ============================================================================
 #
-# Master class schema for the 12-class bouncer model.
+# Master class schema for the 11-class bouncer model.
 # Every adapter remaps its native classes into this canonical ID space.
 #
 # This file is the single source of truth for:
@@ -19,7 +19,7 @@
 # Never reorder or insert between existing entries.
 
 schema:
-  nc: 12
+  nc: 11
   names:
     0: rice_leaf
     1: rice_panicle
@@ -27,12 +27,19 @@ schema:
     3: maize_leaf
     4: maize_ear
     5: potato_leaf
-    6: potato_tuber
-    7: tomato_leaf
-    8: tomato_fruit
-    9: brassica_leaf
-    10: cauliflower_head
-    11: cabbage_head
+    6: tomato_leaf
+    7: tomato_fruit
+    8: brassica_leaf
+    9: cauliflower_head
+    10: cabbage_head
+
+curation:
+  enabled: true
+  strict_class_threshold: 2000
+  strict_drop_policy: image
+  min_bbox_area_pixels: 16
+  min_bbox_area_ratio: 0.0001
+  report_top_failures: 20
 
 # ---------------------------------------------------------------------------
 # OUTPUT CONFIGURATION
@@ -58,7 +65,7 @@ output:
 #   enabled     — Set to false to skip a source without deleting its config
 #   class_map   — Maps source class names/IDs → master Krishi class IDs
 #                  Keys are the source's native class names (strings) or IDs (ints).
-#                  Values are master class IDs (0–11).
+#                  Values are master class IDs (0–10).
 #                  Any source class not listed here is DROPPED (ignored).
 #   split       — "preserve" (use source's train/val dirs) or "auto" (random 80/20)
 #   notes       — Free-text documentation
@@ -79,22 +86,22 @@ sources:
       # The exact native class names will be discovered during first run.
       # These are educated guesses based on the dataset description.
       # The adapter will log unmapped classes so you can fix this config.
-      Tomato_Bacterial_spot: 7
-      Tomato_Early_blight: 7
-      Tomato_Late_blight: 7
-      Tomato_Leaf_Mold: 7
-      Tomato_Septoria_leaf_spot: 7
-      Tomato_Spider_mites: 7
-      Tomato_Target_Spot: 7
-      Tomato_Tomato_YellowLeaf: 7
-      Tomato_Tomato_mosaic_virus: 7
-      Tomato Yellow Leaf Curl Virus: 7
-      Tomato mosaic virus: 7
-      Tomato Spider mites Two-spotted spider mite: 7
-      Tomato_healthy: 7
-      # All leaf-related classes → tomato_leaf (7)
+      Tomato_Bacterial_spot: 6
+      Tomato_Early_blight: 6
+      Tomato_Late_blight: 6
+      Tomato_Leaf_Mold: 6
+      Tomato_Septoria_leaf_spot: 6
+      Tomato_Spider_mites: 6
+      Tomato_Target_Spot: 6
+      Tomato_Tomato_YellowLeaf: 6
+      Tomato_Tomato_mosaic_virus: 6
+      Tomato Yellow Leaf Curl Virus: 6
+      Tomato mosaic virus: 6
+      Tomato Spider mites Two-spotted spider mite: 6
+      Tomato_healthy: 6
+      # All leaf-related classes → tomato_leaf (6)
       # If the dataset has a "fruit" class, add:
-      # tomato_fruit: 8
+      # tomato_fruit: 7
     notes: >
       Gold standard. ~10,853 images already in YOLOv8 format.
       Native class names need verification on first run — the adapter
@@ -114,6 +121,25 @@ sources:
     notes: >
       ~2,193 original images with COCO JSON bounding box annotations.
       The COCOAdapter converts these to YOLO txt format automatically.
+
+  - name: rice_leaf_kaggle
+    type: kaggle
+    handle: hadiurrahmannabil/rice-leaf-spot-disease-annotated-dataset
+    format: coco
+    enabled: true
+    split: auto
+    class_map:
+      Rice Hispa: 0
+      Neck Blast: 0
+      Narrow Brown Leaf Spot: 0
+      Leaf Scald: 0
+      Leaf Blast: 0
+      Healthy Rice Leaf: 0
+      Brown Spot: 0
+      Bacterial Leaf Blight: 0
+    notes: >
+      Primary public rice leaf detection source.
+      All disease and healthy rice leaf boxes map to the canonical rice_leaf class.
 
   - name: potato_leaf_kaggle
     type: kaggle
@@ -177,7 +203,7 @@ sources:
 
   - name: rice_leaf_roboflow
     type: roboflow
-    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    handle: "petaniku/rice-leaf-detection/5"
     format: yolo
     enabled: false
     split: preserve
@@ -187,8 +213,8 @@ sources:
       leaf: 0
       Leaf: 0
     notes: >
-      Find a rice leaf detection dataset on Roboflow Universe.
-      Search: "rice leaf detection" → export YOLOv8 format.
+      Verified public fallback source for rice_leaf.
+      Keep disabled unless the Kaggle rice leaf source proves incompatible or too noisy.
 
   - name: potato_leaf_roboflow
     type: roboflow
@@ -242,38 +268,63 @@ sources:
       Roboflow: https://universe.roboflow.com/research-kesig/corn-ears-detection
       Download in YOLOv8 format.
 
-  - name: potato_tuber_roboflow
+  - name: tomato_fruit_roboflow
     type: roboflow
-    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    handle: "tomato-disease-detection-fcgsf/tomato-fruit-disease-detection/4"
     format: yolo
-    enabled: false
+    enabled: true
     split: preserve
     class_map:
-      potato: 6
-      Potato: 6
-      tuber: 6
-      potato_tuber: 6
+      Anthracnose: 7
+      Bacterial_Spot: 7
+      Blossom end rot: 7
+      Healthy Tomato: 7
+      Spotted wilt Virus: 7
     notes: >
-      Search Roboflow Universe for "potato detection" or "potato tuber".
-      Download in YOLOv8 format. This captures blackleg, common scab,
-      and other tuber-presenting diseases.
+      Primary public tomato fruit detection source.
+      Use only fruit-localizing boxes; reject disease-spot-only annotations during validation.
 
-  - name: brassica_leaf_roboflow
+  - name: brassica_leaf_cauliflower_roboflow
     type: roboflow
-    handle: "REPLACE_WITH_YOUR_WORKSPACE/YOUR_PROJECT/1"
+    handle: "computervisionprojects-apdge/cauli_disease/4"
+    format: yolo
+    enabled: true
+    split: preserve
+    class_map:
+      Alternaria Leaf Spot: 8
+      alternaria_leaf_spot: 8
+      Black Rot: 8
+      black_rot: 8
+      Downy Mildew: 8
+      downey_mildew: 8
+      downy_mildew: 8
+      Insect Infested: 8
+      insect_infested: 8
+      Nutrient Deficiency: 8
+      nutrient_deficiency: 8
+    notes: >
+      Primary public brassica_leaf source using cauliflower leaf disease boxes.
+      Original source is the verified public Roboflow project referenced by the Hugging Face plant_care dataset.
+
+  - name: brassica_leaf_cauliflower_fallback_roboflow
+    type: roboflow
+    handle: "tru-projects-cqcql/cauliflower-dataset/1"
     format: yolo
     enabled: false
     split: preserve
     class_map:
-      leaf: 9
-      Leaf: 9
-      cabbage_leaf: 9
-      cauliflower_leaf: 9
-      brassica_leaf: 9
+      Bacterial Spot rot: 8
+      Black Rot: 8
+      Downy Mildew: 8
+      healthy leaf: 8
+      leaf: 8
+      Leaf: 8
+      cabbage_leaf: 8
+      cauliflower_leaf: 8
+      brassica_leaf: 8
     notes: >
-      Search Roboflow Universe for "cabbage leaf" or "brassica leaf disease".
-      Download in YOLOv8 format. Covers black rot, downy mildew, and
-      diamondback moth damage that appears on leaves, not heads.
+      Fallback cauliflower-derived brassica_leaf source.
+      Keep disabled by default because this dataset also contains healthy_bulb, which must stay unmapped.
 
   - name: cauliflower_roboflow
     type: roboflow
@@ -282,9 +333,9 @@ sources:
     enabled: true
     split: preserve
     class_map:
-      cauliflower: 10
-      Cauliflower: 10
-      cauliflower_head: 10
+      cauliflower: 9
+      Cauliflower: 9
+      cauliflower_head: 9
     notes: >
       Roboflow: https://universe.roboflow.com/yolo2-rtr8h/cauliflower-tv0hi
       Download in YOLOv8 format.
@@ -296,12 +347,12 @@ sources:
     enabled: true
     split: preserve
     class_map:
-      cabbage: 11
-      Cabbage: 11
-      cabbage_head: 11
-      fresh: 11
-      moderate fresh: 11
-      rotten: 11
+      cabbage: 10
+      Cabbage: 10
+      cabbage_head: 10
+      fresh: 10
+      moderate fresh: 10
+      rotten: 10
     notes: >
       Roboflow: https://universe.roboflow.com/yolo-ssbxq/cabbage-gf0rt
       Download in YOLOv8 format.

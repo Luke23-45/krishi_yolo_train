@@ -134,20 +134,22 @@ class COCOAdapter(BaseAdapter):
                     if master_id is None:
                         continue
 
-                    bbox = self.sanitize_coco_bbox(ann["bbox"], img_w, img_h)
-                    if bbox is not None:
-                        area = float(bbox[2] * bbox[3])
-                        canonical_objects.append(
-                            CanonicalObject(
-                                bbox=[round(float(v), 4) for v in bbox],
-                                category=master_id,
-                                category_name="",
-                                area=round(area, 4),
-                            )
+                    inspected = self.inspect_coco_bbox(ann["bbox"], img_w, img_h)
+                    sanitized_bbox = inspected["sanitized_bbox"] or []
+                    canonical_objects.append(
+                        CanonicalObject(
+                            bbox=sanitized_bbox,
+                            category=master_id,
+                            category_name="",
+                            area=round(float(sanitized_bbox[2] * sanitized_bbox[3]), 4) if sanitized_bbox else 0.0,
+                            raw_bbox=inspected["raw_bbox"],
+                            quality_flags=inspected["quality_flags"],
+                            valid_geometry=bool(inspected["valid_geometry"]),
                         )
-                        stats["classes_found"][master_id] = (
-                            stats["classes_found"].get(master_id, 0) + 1
-                        )
+                    )
+                    stats["classes_found"][master_id] = (
+                        stats["classes_found"].get(master_id, 0) + 1
+                    )
 
                 if canonical_objects:
                     all_items.append(

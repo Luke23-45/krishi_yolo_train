@@ -34,6 +34,17 @@ def resolve_dataset_path(path_value: str | Path) -> Path:
     return (PROJECT_ROOT / expanded).resolve()
 
 
+def _load_curation_summary(dataset_dir: Path) -> Dict:
+    report_path = dataset_dir / "materialization_report.json"
+    if not report_path.exists():
+        return {}
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload.get("curation", {}) or {}
+
+
 def _check_images_readable(image_paths: List[Path]) -> Dict:
     try:
         from PIL import Image
@@ -125,6 +136,7 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
         split_summary[split] = {"images": len(rows), "files": len(files_on_disk)}
 
     image_results = _check_images_readable(image_paths) if do_check_images else {}
+    curation_summary = _load_curation_summary(dataset_dir)
 
     logger.info("Canonical split counts: %s", split_summary)
     for class_id in sorted(names):
@@ -136,6 +148,12 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
             logger.warning("  - %s", err)
     else:
         logger.info("Canonical dataset is valid.")
+        if curation_summary:
+            logger.info(
+                "Curation summary: dropped %s images and %s objects during build.",
+                curation_summary.get("dropped_images", 0),
+                curation_summary.get("dropped_objects", 0),
+            )
 
     report = {
         "format": "canonical",
@@ -144,6 +162,7 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
         "class_counts": dict(class_counts),
         "errors": errors,
         "image_checks": image_results,
+        "curation": curation_summary,
     }
     report_path = dataset_dir / "validation_report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -233,6 +252,7 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
                 class_counts[cls_id] += 1
 
     image_results = _check_images_readable(image_paths) if do_check_images else {}
+    curation_summary = _load_curation_summary(dataset_dir.parent / "hf_dataset") if not (dataset_dir / "materialization_report.json").exists() else _load_curation_summary(dataset_dir)
 
     logger.info("YOLO split counts: %s", split_summary)
     for class_id in sorted(names):
@@ -244,6 +264,12 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
             logger.warning("  - %s", err)
     else:
         logger.info("YOLO dataset is valid.")
+        if curation_summary:
+            logger.info(
+                "Curation summary: dropped %s images and %s objects during build.",
+                curation_summary.get("dropped_images", 0),
+                curation_summary.get("dropped_objects", 0),
+            )
 
     report = {
         "format": "yolo",
@@ -252,6 +278,7 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
         "class_counts": dict(class_counts),
         "errors": errors,
         "image_checks": image_results,
+        "curation": curation_summary,
     }
     report_path = dataset_dir / "validation_report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -17,7 +17,8 @@ import hashlib
 import logging
 import re
 import shutil
-from dataclasses import asdict, dataclass
+import math
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -32,6 +33,9 @@ class CanonicalObject:
     category: int
     category_name: str
     area: float
+    raw_bbox: List[float] = field(default_factory=list)
+    quality_flags: List[str] = field(default_factory=list)
+    valid_geometry: bool = True
     iscrowd: int = 0
 
     def to_dict(self) -> Dict:
@@ -90,7 +94,7 @@ class BaseAdapter(abc.ABC):
 
     All label files must be in YOLO normalized format:
         <class_id> <x_center> <y_center> <width> <height>
-    where class_id is from the master Krishi schema (0-11).
+    where class_id is from the master Krishi schema.
     """
 
     @abc.abstractmethod
@@ -109,7 +113,7 @@ class BaseAdapter(abc.ABC):
         Args:
             source_dir:     Root of the downloaded/local dataset.
             staging_dir:    Where to write processed images + labels.
-            class_map:      Maps source class names -> master Krishi IDs (0-11).
+            class_map:      Maps source class names -> master Krishi IDs.
             source_name:    Unique prefix for filename deduplication.
             split_strategy: "preserve" to keep source splits, "auto" for random 80/20.
             val_ratio:      Fraction for validation when split_strategy is "auto".
@@ -312,3 +316,92 @@ class BaseAdapter(abc.ABC):
             return None
 
         return [round(x1, 4), round(y1, 4), round(new_w, 4), round(new_h, 4)]
+
+    @staticmethod
+    def inspect_coco_bbox(
+        bbox: List[float],
+        width: int,
+        height: int,
+    ) -> Dict:
+        """
+        Inspect a COCO xywh pixel bbox and preserve both its raw and sanitized forms.
+        """
+        result = {
+            "raw_bbox": [],
+            "sanitized_bbox": None,
+            "quality_flags": [],
+            "valid_geometry": False,
+        }
+
+        if len(bbox) != 4:
+            result["quality_flags"].append("malformed")
+            return result
+
+        try:
+            raw_bbox = [float(v) for v in bbox]
+        except (TypeError, ValueError):
+            result["quality_flags"].append("non_numeric")
+            return result
+
+        result["raw_bbox"] = [round(v, 4) for v in raw_bbox]
+        x, y, w, h = raw_bbox
+
+        if any(not math.isfinite(v) for v in raw_bbox):
+            result["quality_flags"].append("nan")
+            return result
+
+        if w <= 0.0 or h <= 0.0:
+            result["quality_flags"].append("non_positive")
+
+        if x < 0.0 or y < 0.0 or (x + w) > float(width) or (y + h) > float(height):
+            result["quality_flags"].append("out_of_bounds")
+
+        sanitized = BaseAdapter.sanitize_coco_bbox(raw_bbox, width, height)
+        if sanitized is None:
+            result["quality_flags"].append("collapsed_after_clamp")
+            return result
+
+        if any(abs(a - b) > 1e-3 for a, b in zip(sanitized, raw_bbox)):
+            result["quality_flags"].append("truncated_after_clamp")
+
+        result["sanitized_bbox"] = sanitized
+        result["valid_geometry"] = True
+        return result
+
+    @staticmethod
+    def inspect_yolo_bbox(
+        parts: List[str],
+        width: int,
+        height: int,
+    ) -> Dict:
+        """
+        Inspect a YOLO xywh line by converting to raw COCO pixels before sanitation.
+        """
+        if len(parts) < 5:
+            return {
+                "raw_bbox": [],
+                "sanitized_bbox": None,
+                "quality_flags": ["malformed"],
+                "valid_geometry": False,
+            }
+
+        try:
+            x_center = float(parts[1])
+            y_center = float(parts[2])
+            box_w = float(parts[3])
+            box_h = float(parts[4])
+        except ValueError:
+            return {
+                "raw_bbox": [],
+                "sanitized_bbox": None,
+                "quality_flags": ["non_numeric"],
+                "valid_geometry": False,
+            }
+
+        raw_bbox = [
+            (x_center - box_w / 2.0) * width,
+            (y_center - box_h / 2.0) * height,
+            box_w * width,
+            box_h * height,
+        ]
+        return BaseAdapter.inspect_coco_bbox(raw_bbox, width, height)
