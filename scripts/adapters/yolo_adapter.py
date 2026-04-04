@@ -40,7 +40,8 @@ from __future__ import annotations
 import logging
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+from typing import DefaultDict, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -85,7 +86,7 @@ class YOLOAdapter(BaseAdapter):
             "errors": 0,
         }
 
-        all_items: List[Tuple[Path, Path, str]] = []  # (img, lbl, split)
+        all_items: List[Tuple[Path, Optional[Path], str]] = []  # (img, lbl, split)
 
         for split_name, (img_dir, lbl_dir) in splits.items():
             if img_dir is None or not img_dir.exists():
@@ -100,12 +101,18 @@ class YOLOAdapter(BaseAdapter):
                 label_path = self._find_label(img_path, lbl_dir)
                 all_items.append((img_path, label_path, split_name))
 
+        if not all_items:
+            all_items = self._discover_items_recursively(source_dir, source_name)
+
         # If auto-split is requested and we only have one split, redistribute
-        if split_strategy == "auto" or (
-            split_strategy == "preserve"
-            and all(s == "train" for _, _, s in all_items)
-            and len(all_items) > 0
-        ):
+        should_autosplit = (
+            split_strategy == "auto"
+            or (
+                split_strategy == "preserve"
+                and all(s == "train" for _, _, s in all_items)
+            )
+        )
+        if all_items and should_autosplit:
             random.seed(42)
             random.shuffle(all_items)
             n_val = max(1, int(len(all_items) * val_ratio))
@@ -368,6 +375,38 @@ class YOLOAdapter(BaseAdapter):
         logger.error(f"Could not discover any valid layout in {source_dir}")
         return {}
 
+    def _discover_items_recursively(
+        self,
+        source_dir: Path,
+        source_name: str,
+    ) -> List[Tuple[Path, Optional[Path], str]]:
+        """
+        Fallback discovery for non-standard YOLO exports.
+
+        Some Kaggle datasets ship with unusual nesting or capitalization
+        (for example Train/Images, image files mixed into label folders, or
+        annotations beside images). When our canonical layouts fail, scan the
+        tree directly and recover image/label pairs heuristically.
+        """
+        label_index: DefaultDict[str, List[Path]] = defaultdict(list)
+        for txt_path in source_dir.rglob("*.txt"):
+            if txt_path.is_file():
+                label_index[txt_path.stem.lower()].append(txt_path)
+
+        all_items: List[Tuple[Path, Optional[Path], str]] = []
+        for img_path in sorted(p for p in source_dir.rglob("*") if p.is_file() and self.is_image_file(p)):
+            label_path = self._find_label_flexible(img_path, source_dir, label_index)
+            split = self._infer_split_from_path(img_path, source_dir)
+            all_items.append((img_path, label_path, split))
+
+        if all_items:
+            logger.info(
+                f"[{source_name}] Recursive fallback discovered {len(all_items)} images"
+            )
+        else:
+            logger.error(f"[{source_name}] Recursive fallback also found no images in {source_dir}")
+        return all_items
+
     @staticmethod
     def _normalize_split_name(split_name: str) -> str:
         """
@@ -389,3 +428,83 @@ class YOLOAdapter(BaseAdapter):
 
         lbl_path = lbl_dir / img_path.with_suffix(".txt").name
         return lbl_path if lbl_path.exists() else None
+
+    def _find_label_flexible(
+        self,
+        img_path: Path,
+        source_dir: Path,
+        label_index: DefaultDict[str, List[Path]],
+    ) -> Optional[Path]:
+        """Best-effort label matching for non-standard YOLO directory layouts."""
+        direct_candidates: List[Path] = [img_path.with_suffix(".txt")]
+
+        try:
+            rel_path = img_path.resolve().relative_to(source_dir.resolve())
+        except ValueError:
+            rel_path = Path(img_path.name)
+
+        rel_parts = list(rel_path.parts)
+        for i, part in enumerate(rel_parts[:-1]):
+            if part.lower() == "images":
+                candidate_parts = list(rel_parts)
+                candidate_parts[i] = "labels"
+                direct_candidates.append((source_dir / Path(*candidate_parts)).with_suffix(".txt"))
+
+        for candidate in direct_candidates:
+            if candidate.exists():
+                return candidate
+
+        stem_matches = label_index.get(img_path.stem.lower(), [])
+        if len(stem_matches) == 1:
+            return stem_matches[0]
+        if len(stem_matches) > 1:
+            return min(
+                stem_matches,
+                key=lambda candidate: self._label_distance_score(candidate, img_path, source_dir),
+            )
+        return None
+
+    @staticmethod
+    def _infer_split_from_path(img_path: Path, source_dir: Path) -> str:
+        """Infer split from any parent folder name, defaulting to train."""
+        try:
+            parts = [part.lower() for part in img_path.resolve().relative_to(source_dir.resolve()).parts]
+        except ValueError:
+            parts = [part.lower() for part in img_path.parts]
+
+        for part in parts:
+            if part in {"val", "valid", "validation", "test"}:
+                return "val"
+            if part == "train":
+                return "train"
+        return "train"
+
+    @staticmethod
+    def _label_distance_score(label_path: Path, img_path: Path, source_dir: Path) -> Tuple[int, int, str]:
+        """
+        Prefer labels that live nearest to the image and share the most path
+        structure after normalizing split/images/labels folder names.
+        """
+        normalized_tokens = {"train", "val", "valid", "validation", "test", "images", "labels"}
+
+        def normalize(path: Path) -> List[str]:
+            try:
+                parts = path.resolve().relative_to(source_dir.resolve()).parts
+            except ValueError:
+                parts = path.parts
+            return [part.lower() for part in parts[:-1] if part.lower() not in normalized_tokens]
+
+        img_parts = normalize(img_path)
+        label_parts = normalize(label_path)
+
+        suffix_overlap = 0
+        for img_part, label_part in zip(reversed(img_parts), reversed(label_parts)):
+            if img_part != label_part:
+                break
+            suffix_overlap += 1
+
+        try:
+            distance = len(label_path.resolve().relative_to(source_dir.resolve()).parts)
+        except ValueError:
+            distance = len(label_path.parts)
+        return (-suffix_overlap, distance, str(label_path))
