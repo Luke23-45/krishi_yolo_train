@@ -581,7 +581,7 @@ def upload_dataset_folder(
         os.environ.get("HUGGING_FACE_HUB_TOKEN")
         or os.environ.get("HF_TOKEN")
     )
-    api = HfApi()
+    api = HfApi(token=token)
     api.create_repo(
         repo_id=repo_id,
         repo_type="dataset",
@@ -593,7 +593,6 @@ def upload_dataset_folder(
         "repo_id": repo_id,
         "repo_type": "dataset",
         "folder_path": str(local_root),
-        "token": token,
     }
     if use_large_folder:
         if not hasattr(api, "upload_large_folder"):
@@ -601,7 +600,13 @@ def upload_dataset_folder(
                 "huggingface_hub in this environment does not support upload_large_folder(). "
                 "Upgrade with: pip install -U huggingface_hub"
             )
-        api.upload_large_folder(**upload_args)
+        api.upload_large_folder(
+            **upload_args,
+            print_report=False,
+        )
     else:
-        api.upload_folder(**upload_args)
+        api.upload_folder(
+            **upload_args,
+            token=token,
+        )
     return f"https://huggingface.co/datasets/{repo_id}"
