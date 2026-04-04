@@ -125,20 +125,38 @@ sources:
   - name: rice_leaf_kaggle
     type: kaggle
     handle: hadiurrahmannabil/rice-leaf-spot-disease-annotated-dataset
-    format: coco
+    format: yolo
     enabled: true
     split: auto
     class_map:
       Rice Hispa: 0
+      Rice_Hispa: 0
+      rice hispa: 0
       Neck Blast: 0
+      Neck_Blast: 0
+      neck blast: 0
       Narrow Brown Leaf Spot: 0
+      Narrow_Brown_Leaf_Spot: 0
+      narrow brown leaf spot: 0
       Leaf Scald: 0
+      Leaf_Scald: 0
+      leaf scald: 0
       Leaf Blast: 0
+      Leaf_Blast: 0
+      leaf blast: 0
       Healthy Rice Leaf: 0
+      HealthyLeaf: 0
+      healthy rice leaf: 0
+      healthy leaf: 0
       Brown Spot: 0
+      Brown_Spot: 0
+      brown spot: 0
       Bacterial Leaf Blight: 0
+      Bacterial_Leaf_Blight: 0
+      bacterial leaf blight: 0
     notes: >
       Primary public rice leaf detection source.
+      This source is YOLO-style object detection data.
       All disease and healthy rice leaf boxes map to the canonical rice_leaf class.
 
   - name: potato_leaf_kaggle
