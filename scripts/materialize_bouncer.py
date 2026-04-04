@@ -724,7 +724,9 @@ def materialize(
     logger.info("  Next steps:")
     logger.info("    1. Validate canonical: python scripts/validate.py --dataset hf_dataset --format canonical")
     logger.info("    2. Validate YOLO:      python scripts/validate.py --dataset krishi_bouncer_dataset --format yolo")
-    logger.info("    3. Package/upload:     python scripts/package_hf_dataset.py --input hf_dataset --repo-id <repo>")
+    logger.info(
+        "    3. Package/upload:     python scripts/package_hf_dataset.py --input hf_dataset --repo-id <repo> --publish-format webdataset --upload-strategy large-folder"
+    )
 
 
 def main():
