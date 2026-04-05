@@ -1,0 +1,146 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yoloml"
+version = "0.1.0"
+description = "Krishi Vaidya YOLO ML package for agricultural object detection"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Krishi Vaidya Team"}
+]
+keywords = ["yolo", "object-detection", "agriculture", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+    "pyarrow>=14.0",
+    "pillow>=10.0",
+    "numpy>=1.24",
+    "huggingface_hub>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+train = [
+    "ultralytics>=8.0",
+    "torch>=2.0",
+]
+export = [
+    "ultralytics>=8.0",
+    "tensorflow>=2.14",
+    "tflite-runtime>=2.14",
+]
+viz = [
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+]
+roboflow = [
+    "roboflow>=1.0",
+]
+kaggle = [
+    "kagglehub>=0.2",
+]
+all = [
+    "yoloml[dev,train,export,viz,roboflow,kaggle]",
+]
+
+[project.scripts]
+yoloml-materialize = "yoloml.data.materialize:main"
+yoloml-validate = "yoloml.data.validate:main"
+yoloml-export-yolo = "yoloml.data.export_yolo:main"
+yoloml-package = "yoloml.data.package:main"
+yoloml-train = "yoloml.training.train:main"
+yoloml-quantize = "yoloml.models.quantize:main"
+yoloml-visualize = "yoloml.utils.visualize:main"
+
+[project.urls]
+Homepage = "https://github.com/Luke23-45/krishi_yolo_train"
+Repository = "https://github.com/Luke23-45/krishi_yolo_train"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+yoloml = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+    | \.cache
+    | outputs
+    | runs
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by black)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without strict
+    "ARG001", # unused function argument
+    "ARG002", # unused method argument
+]
+
+[tool.ruff.isort]
+known-first-party = ["yoloml"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

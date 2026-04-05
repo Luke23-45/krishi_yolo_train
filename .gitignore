@@ -72,7 +72,7 @@ venv.bak/
 
 # Machine Learning / YOLO specific
 datasets/
-data/
+# data/
 runs/
 wandb/
 *.pt
@@ -88,3 +88,5 @@ yolov8*.pt
 sample_data/
 docs
 notes.md
+
+ledger
