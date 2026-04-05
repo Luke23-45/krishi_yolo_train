@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, TrainingConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -319,8 +321,8 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
-def train(args: argparse.Namespace) -> None:
-    data_yaml = args.data.resolve()
+def train(args: TrainingConfig) -> None:
+    data_yaml = Path(args.data).resolve()
     if not data_yaml.exists():
         logger.error("data.yaml not found: %s", data_yaml)
         sys.exit(1)
@@ -470,66 +472,11 @@ def train(args: argparse.Namespace) -> None:
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Krishi Vaidya — YOLOv8 training with class-imbalance mitigation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--data", type=Path, required=True,
-        help="Path to YOLO data.yaml",
-    )
-    parser.add_argument(
-        "--model", type=str, default="yolov8n.pt",
-        help="Base model checkpoint (default: yolov8n.pt)",
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=100,
-        help="Training epochs (default: 100)",
-    )
-    parser.add_argument(
-        "--batch", type=int, default=16,
-        help="Batch size (default: 16)",
-    )
-    parser.add_argument(
-        "--imgsz", type=int, default=640,
-        help="Input image size for training (default: 640)",
-    )
-    parser.add_argument(
-        "--patience", type=int, default=15,
-        help="Early stopping patience (default: 15)",
-    )
-    parser.add_argument(
-        "--device", type=str, default="auto",
-        help="Device: auto | 0 | cpu | mps (default: auto)",
-    )
-    parser.add_argument(
-        "--name", type=str, default=None,
-        help="Experiment name (default: auto-generated with timestamp)",
-    )
-    parser.add_argument(
-        "--balance", action="store_true",
-        help="Enable offline Repeat Factor Sampling for class balancing",
-    )
-    parser.add_argument(
-        "--rfs-threshold", type=float, default=None,
-        help="RFS threshold (default: auto-computed as median class frequency)",
-    )
-    parser.add_argument(
-        "--beta", type=float, default=0.9999,
-        help="Effective number β for class-balanced loss (default: 0.9999)",
-    )
-    parser.add_argument(
-        "--no-class-weights", action="store_true",
-        help="Disable class-balanced loss weighting (use RFS only)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Compute and print balance info without launching training",
-    )
-    args = parser.parse_args()
-    train(args)
+setup_config()
 
+@hydra.main(version_base=None, config_path="../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    train(cfg.training)
 
 if __name__ == "__main__":
     main()

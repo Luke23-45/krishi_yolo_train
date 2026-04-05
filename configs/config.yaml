@@ -1,0 +1,9 @@
+defaults:
+  - base_config
+  - _self_
+
+# You can override parameters here.
+# For example:
+# training:
+#   epochs: 200
+#   batch: 32
