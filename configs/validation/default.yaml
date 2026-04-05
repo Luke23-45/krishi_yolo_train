@@ -1,0 +1,3 @@
+dataset: krishi_bouncer_dataset
+format: yolo
+verify_images: false

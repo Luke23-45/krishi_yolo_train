@@ -20,7 +20,6 @@ References:
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
@@ -28,6 +27,9 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, VisualizationConfig
 
 import matplotlib
 matplotlib.use("Agg")
@@ -530,26 +532,18 @@ def _save(fig: plt.Figure, stem: Path) -> None:
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate publication-quality dataset analysis figures.",
-    )
-    parser.add_argument(
-        "--data-yaml", type=Path, required=True,
-        help="Path to the YOLO data.yaml file.",
-    )
-    parser.add_argument(
-        "--output-dir", type=Path, default=None,
-        help="Output directory for figures (default: outputs/figures).",
-    )
-    args = parser.parse_args()
+setup_config()
 
-    data_yaml = args.data_yaml.resolve()
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    args: VisualizationConfig = cfg.visualization
+
+    data_yaml = Path(args.data_yaml).resolve()
     if not data_yaml.exists():
         logger.error("data.yaml not found: %s", data_yaml)
         sys.exit(1)
 
-    output_dir = (args.output_dir or PROJECT_ROOT / "outputs" / "figures").resolve()
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "outputs" / "figures").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     _apply_theme()
@@ -571,7 +565,6 @@ def main() -> None:
     plot_rebalancing_preview(names, total, total_images, output_dir)
 
     logger.info("All %d figures saved to: %s", 5, output_dir)
-
 
 if __name__ == "__main__":
     main()

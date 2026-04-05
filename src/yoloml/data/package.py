@@ -6,9 +6,11 @@ Package and optionally upload the canonical Hugging Face dataset.
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, PackageConfig
 
 from yoloml.data.canonical import (
     create_archive,
@@ -36,57 +38,19 @@ def validate_canonical_root(dataset_root: Path) -> None:
         )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Package/upload canonical Hugging Face dataset")
-    parser.add_argument("--input", type=Path, required=True, help="Canonical HF dataset root")
-    parser.add_argument("--repo-id", type=str, help="Hugging Face dataset repo id")
-    parser.add_argument(
-        "--publish-format",
-        choices=("webdataset", "folder"),
-        default="webdataset",
-        help="Hub publish artifact format",
-    )
-    parser.add_argument(
-        "--publish-output",
-        type=Path,
-        help="Optional publish artifact directory; defaults next to the input root",
-    )
-    parser.add_argument(
-        "--shard-size-mb",
-        type=int,
-        default=1024,
-        help="Target WebDataset shard size in MB",
-    )
-    parser.add_argument(
-        "--upload-strategy",
-        choices=("large-folder", "folder"),
-        default="large-folder",
-        help="Upload method when publishing to Hugging Face",
-    )
-    parser.add_argument(
-        "--archive-format",
-        choices=("zip", "tar.gz"),
-        help="Optional convenience archive format",
-    )
-    parser.add_argument(
-        "--archive-output",
-        type=Path,
-        help="Optional archive output path; defaults next to the input root",
-    )
-    parser.add_argument(
-        "--private",
-        action="store_true",
-        help="Create the Hugging Face dataset repo as private if it does not exist",
-    )
-    args = parser.parse_args()
+setup_config()
 
-    dataset_root = args.input.resolve()
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    args: PackageConfig = cfg.package
+
+    dataset_root = Path(args.input).resolve()
     validate_canonical_root(dataset_root)
 
     publish_root: Path | None = None
     if args.publish_format == "webdataset":
         publish_root = (
-            args.publish_output.resolve()
+            Path(args.publish_output).resolve()
             if args.publish_output
             else dataset_root.parent / f"{dataset_root.name}_webdataset"
         )
@@ -110,7 +74,7 @@ def main() -> None:
 
     if args.archive_format:
         suffix = ".zip" if args.archive_format == "zip" else ".tar.gz"
-        archive_output = args.archive_output.resolve() if args.archive_output else dataset_root.with_suffix(suffix)
+        archive_output = Path(args.archive_output).resolve() if args.archive_output else dataset_root.with_suffix(suffix)
         archive_path = create_archive(dataset_root, archive_output, args.archive_format)
         print(f"Created archive: {archive_path}")
 
@@ -123,7 +87,6 @@ def main() -> None:
             use_large_folder=(args.upload_strategy == "large-folder"),
         )
         print(f"Uploaded dataset to {url}")
-
 
 if __name__ == "__main__":
     main()

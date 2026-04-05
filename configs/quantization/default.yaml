@@ -1,0 +1,8 @@
+model: runs/detect/best.pt
+data: null
+levels:
+  - fp32
+  - fp16
+  - int8
+imgsz: 416
+output: outputs/quantized

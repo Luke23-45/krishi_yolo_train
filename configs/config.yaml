@@ -1,9 +1,10 @@
 defaults:
-  - base_config
+  - dataset: default
+  - telemetry: default
+  - training: default
+  - quantization: default
+  - validation: default
+  - export: default
+  - visualization: default
+  - package: default
   - _self_
-
-# You can override parameters here.
-# For example:
-# training:
-#   epochs: 200
-#   batch: 32

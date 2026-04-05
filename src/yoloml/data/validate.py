@@ -6,7 +6,6 @@ Validation for canonical Hugging Face and derived YOLO datasets.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import sys
@@ -15,6 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 import yaml
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, ValidationConfig
 
 from yoloml.data.canonical import IMAGE_EXTENSIONS, read_schema_names, read_split_metadata
 
@@ -288,28 +289,17 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
         sys.exit(1)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate canonical or YOLO dataset outputs")
-    parser.add_argument("--dataset", type=Path, required=True, help="Dataset root path")
-    parser.add_argument(
-        "--format",
-        choices=("canonical", "yolo"),
-        default="yolo",
-        help="Dataset format to validate",
-    )
-    parser.add_argument(
-        "--check-images",
-        action="store_true",
-        help="Also verify that image files are readable",
-    )
-    args = parser.parse_args()
+setup_config()
 
-    dataset_dir = args.dataset.resolve()
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    args: ValidationConfig = cfg.validation
+
+    dataset_dir = Path(args.dataset).resolve()
     if args.format == "canonical":
-        validate_canonical(dataset_dir, do_check_images=args.check_images)
+        validate_canonical(dataset_dir, do_check_images=args.verify_images)
     else:
-        validate_yolo(dataset_dir, do_check_images=args.check_images)
-
+        validate_yolo(dataset_dir, do_check_images=args.verify_images)
 
 if __name__ == "__main__":
     main()

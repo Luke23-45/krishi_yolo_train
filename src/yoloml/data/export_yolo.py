@@ -6,24 +6,26 @@ Export a canonical Hugging Face dataset into Ultralytics YOLO format.
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, ExportConfig
 
 from yoloml.data.canonical import export_yolo_from_canonical
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Export canonical dataset to YOLO format")
-    parser.add_argument("--input", type=Path, required=True, help="Canonical HF dataset root")
-    parser.add_argument("--output", type=Path, required=True, help="Output YOLO dataset root")
-    args = parser.parse_args()
+setup_config()
 
-    stats = export_yolo_from_canonical(args.input.resolve(), args.output.resolve())
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    args: ExportConfig = cfg.export
+    input_path = Path(args.input).resolve()
+    output_path = Path(args.output).resolve()
+    stats = export_yolo_from_canonical(input_path, output_path)
     print(
-        f"Exported YOLO dataset to {args.output.resolve()} "
+        f"Exported YOLO dataset to {output_path} "
         f"({stats['train_images']} train, {stats['val_images']} val)"
     )
-
 
 if __name__ == "__main__":
     main()

@@ -88,5 +88,6 @@ yolov8*.pt
 sample_data/
 docs
 notes.md
-
+krishi_bouncer_dataset
 ledger
+outputs

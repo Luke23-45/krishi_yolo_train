@@ -28,7 +28,6 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
@@ -41,6 +40,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, TrainingConfig, TelemetryConfig
+from yoloml.utils.telemetry import setup_telemetry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -320,8 +322,7 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
-def train(args: argparse.Namespace) -> None:
-    data_yaml = args.data.resolve()
+def train(args: TrainingConfig, data_yaml: Path, telemetry_cfg: TelemetryConfig) -> None:
     if not data_yaml.exists():
         logger.error("data.yaml not found: %s", data_yaml)
         sys.exit(1)
@@ -443,22 +444,27 @@ def train(args: argparse.Namespace) -> None:
         inject_class_weights(model, weights)
 
     device = resolve_device(args.device)
-    experiment_name = args.name or f"krishi_bouncer_{time.strftime('%Y%m%d_%H%M%S')}"
+    experiment_name = telemetry_cfg.run_name or args.name or f"krishi_bouncer_{time.strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Device:      %s", device)
     logger.info("Experiment:  %s", experiment_name)
     logger.info("Data YAML:   %s", training_data_yaml)
 
-    results = model.train(
-        data=str(training_data_yaml),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=args.batch,
-        name=experiment_name,
-        device=device,
-        patience=args.patience,
-        exist_ok=True,
-    )
+    kwargs = {
+        "data": str(training_data_yaml),
+        "epochs": args.epochs,
+        "imgsz": args.imgsz,
+        "batch": args.batch,
+        "name": experiment_name,
+        "device": device,
+        "patience": args.patience,
+        "exist_ok": True,
+    }
+
+    if telemetry_cfg.enable_wandb:
+        kwargs["project"] = telemetry_cfg.project
+
+    results = model.train(**kwargs)
 
     logger.info("=" * 64)
     logger.info("TRAINING COMPLETE")
@@ -471,66 +477,20 @@ def train(args: argparse.Namespace) -> None:
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Krishi Vaidya — YOLOv8 training with class-imbalance mitigation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--data", type=Path, required=True,
-        help="Path to YOLO data.yaml",
-    )
-    parser.add_argument(
-        "--model", type=str, default="yolov8n.pt",
-        help="Base model checkpoint (default: yolov8n.pt)",
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=100,
-        help="Training epochs (default: 100)",
-    )
-    parser.add_argument(
-        "--batch", type=int, default=16,
-        help="Batch size (default: 16)",
-    )
-    parser.add_argument(
-        "--imgsz", type=int, default=640,
-        help="Input image size for training (default: 640)",
-    )
-    parser.add_argument(
-        "--patience", type=int, default=15,
-        help="Early stopping patience (default: 15)",
-    )
-    parser.add_argument(
-        "--device", type=str, default="auto",
-        help="Device: auto | 0 | cpu | mps (default: auto)",
-    )
-    parser.add_argument(
-        "--name", type=str, default=None,
-        help="Experiment name (default: auto-generated with timestamp)",
-    )
-    parser.add_argument(
-        "--balance", action="store_true",
-        help="Enable offline Repeat Factor Sampling for class balancing",
-    )
-    parser.add_argument(
-        "--rfs-threshold", type=float, default=None,
-        help="RFS threshold (default: auto-computed as median class frequency)",
-    )
-    parser.add_argument(
-        "--beta", type=float, default=0.9999,
-        help="Effective number β for class-balanced loss (default: 0.9999)",
-    )
-    parser.add_argument(
-        "--no-class-weights", action="store_true",
-        help="Disable class-balanced loss weighting (use RFS only)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Compute and print balance info without launching training",
-    )
-    args = parser.parse_args()
-    train(args)
+setup_config()
 
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    # 1. Telemetry & Tracking Bootstrap
+    setup_telemetry(cfg.telemetry)
+
+    # 2. Data Provisioning via Manager
+    from yoloml.data.dataset import DatasetManager
+    manager = DatasetManager(cfg.dataset)
+    verified_data_yaml = manager.prepare_data()
+
+    # 3. Model Training
+    train(cfg.training, verified_data_yaml, cfg.telemetry)
 
 if __name__ == "__main__":
     main()

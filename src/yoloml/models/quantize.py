@@ -28,7 +28,6 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import shutil
@@ -36,6 +35,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import hydra
+from yoloml.config import setup_config, YoloMLConfig, QuantizationConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -263,44 +265,26 @@ def generate_comparison(results: List[Dict[str, Any]], output_dir: Path) -> Path
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Krishi Vaidya — Multi-level TFLite quantization pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--model", type=Path, required=True,
-        help="Path to trained .pt model (e.g., runs/detect/…/weights/best.pt)",
-    )
-    parser.add_argument(
-        "--data", type=Path, default=None,
-        help="Path to data.yaml for INT8 calibration",
-    )
-    parser.add_argument(
-        "--level", type=str, default="all", choices=[*LEVELS, "all"],
-        help="Quantization level: fp32 | fp16 | int8 | all (default: all)",
-    )
-    parser.add_argument(
-        "--imgsz", type=int, default=416,
-        help="Export image size (default: 416 for mobile deployment)",
-    )
-    parser.add_argument(
-        "--output-dir", type=Path, default=None,
-        help="Output directory (default: outputs/quantized)",
-    )
-    args = parser.parse_args()
+setup_config()
 
-    model_path = args.model.resolve()
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def main(cfg: YoloMLConfig) -> None:
+    args: QuantizationConfig = cfg.quantization
+
+    model_path = Path(args.model).resolve()
     if not model_path.exists():
         logger.error("Model not found: %s", model_path)
         sys.exit(1)
 
-    output_dir = (args.output_dir or PROJECT_ROOT / "outputs" / "quantized").resolve()
+    output_dir = (Path(args.output)).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    data_yaml = args.data.resolve() if args.data else None
+    data_yaml = Path(args.data).resolve() if args.data else None
 
-    levels = list(LEVELS) if args.level == "all" else [args.level]
+    # Handle "all" logic if somehow levels has "all" in it, otherwise just use the list
+    levels = ["fp32", "fp16", "int8"] if "all" in args.levels else args.levels
+    if not levels:
+        levels = ["fp32", "fp16", "int8"]
 
     logger.info("=" * 64)
     logger.info("  KRISHI VAIDYA — TFLite Quantization Pipeline")
@@ -333,7 +317,6 @@ def main() -> None:
             )
         else:
             logger.info("  [%s] FAILED: %s", r["level"].upper(), r.get("error", "unknown"))
-
 
 if __name__ == "__main__":
     main()

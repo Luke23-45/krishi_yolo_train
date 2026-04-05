@@ -1,0 +1,13 @@
+data: krishi_bouncer_dataset/data.yaml
+model: yolov8n.pt
+epochs: 100
+batch: 16
+imgsz: 640
+patience: 15
+device: auto
+name: null
+balance: false
+rfs_threshold: null
+beta: 0.9999
+no_class_weights: false
+dry_run: false
