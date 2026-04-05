@@ -87,3 +87,4 @@ yolov8*.pt
 .config/
 sample_data/
 docs
+notes.md

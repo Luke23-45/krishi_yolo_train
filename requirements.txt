@@ -25,3 +25,10 @@ pyarrow>=14.0
 huggingface_hub>=0.24
 
 roboflow
+
+# Training & model export
+ultralytics>=8.2
+
+# Visualization
+matplotlib>=3.7
+seaborn>=0.13
