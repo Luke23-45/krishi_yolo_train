@@ -1,190 +1,189 @@
 """
 DatasetManager: Data Provisioning Architecture
 Acts as a DataModule equivalent to ensure idempotency and seamless
-Hugging Face synchronization before Ultralytics training begins.
+dataset synchronization before Ultralytics training begins.
 """
+
+from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
 from yoloml.config import DatasetProvisioningConfig
+from yoloml.data.canonical import export_yolo_from_canonical
 
 logger = logging.getLogger("krishi.dataset_manager")
 
+
+@dataclass
+class PreparedDataset:
+    data_yaml: Path
+    yolo_root: Path
+    canonical_root: Optional[Path]
+    source: str
+
+
 class DatasetManager:
     """
-    Handles Resilient Dataset Provisioning.
-    Implements a strict Execution Matrix:
-      1. Local Cache Hit
-      2. Hugging Face Hub Synchronization
-      3. Dynamic Materialization Fallback
+    Handles resilient dataset provisioning for training.
     """
 
     def __init__(self, config: DatasetProvisioningConfig):
         self.config = config
-        self.local_path = Path(self.config.local_path).resolve()
-        self.yaml_path = self.local_path / "data.yaml"
+        self.yolo_root = Path(self.config.yolo_root or self.config.local_path or "krishi_bouncer_dataset").resolve()
+        self.canonical_root = Path(self.config.canonical_root).resolve()
+        self.yaml_path = self.yolo_root / "data.yaml"
 
-    def prepare_data(self) -> Path:
-        """
-        Executes the provisioning waterfall and returns the absolute path 
-        to a verified data.yaml file required by Ultralytics YOLO.
-        """
-        logger.info("Initializing Dataset Provisioning Protocol...")
+    def prepare_data(self, output_root: Optional[Path] = None) -> PreparedDataset:
+        logger.info("Initializing dataset provisioning protocol...")
 
-        # Condition 0: Force download
-        if self.config.force_download and self.local_path.exists():
-            logger.warning(f"force_download=True. Purging local cache at {self.local_path}")
-            shutil.rmtree(self.local_path, ignore_errors=True)
+        if self.config.force_download and self.yolo_root.exists():
+            logger.warning("force_download=True. Purging local YOLO dataset at %s", self.yolo_root)
+            shutil.rmtree(self.yolo_root, ignore_errors=True)
 
-        # Condition 1: Check Local Cache Hit
-        if self._verify_integrity(self.local_path):
-            logger.info(f"Local Cache HIT -> {self.local_path}")
-            return self._ensure_absolute_paths(self.yaml_path)
+        if self._verify_yolo_integrity(self.yolo_root):
+            logger.info("Local YOLO dataset HIT -> %s", self.yolo_root)
+            return PreparedDataset(
+                data_yaml=self._write_resolved_data_yaml(self.yaml_path, output_root),
+                yolo_root=self.yolo_root,
+                canonical_root=self.canonical_root if self.canonical_root.exists() else None,
+                source="local-yolo",
+            )
 
-        logger.info(f"Local Cache MISS or INVALID at {self.local_path}")
+        if self._verify_canonical_integrity(self.canonical_root):
+            logger.info("Canonical dataset available locally -> %s", self.canonical_root)
+            export_yolo_from_canonical(self.canonical_root, self.yolo_root)
+            return PreparedDataset(
+                data_yaml=self._write_resolved_data_yaml(self.yaml_path, output_root),
+                yolo_root=self.yolo_root,
+                canonical_root=self.canonical_root,
+                source="local-canonical-export",
+            )
 
-        # Condition 2: Hugging Face Synchronization
-        if self.config.hf_repo_id:
-            logger.info(f"Attempting upstream pull from Hub: {self.config.hf_repo_id}")
-            if self._sync_from_huggingface():
-                if self._verify_integrity(self.local_path):
-                    logger.info("Hub synchronization successful and verified.")
-                    return self._ensure_absolute_paths(self.yaml_path)
-                else:
-                    logger.error("Hub dataset downloaded but failed schema verification.")
-            else:
-                logger.warning("Hub synchronization failed or was unavailable.")
+        logger.info("Local datasets missing or invalid. Attempting upstream sync.")
+        if self.config.hf_repo_id and self._sync_from_huggingface():
+            if self._verify_yolo_integrity(self.yolo_root):
+                logger.info("Hub sync produced a valid YOLO dataset.")
+                return PreparedDataset(
+                    data_yaml=self._write_resolved_data_yaml(self.yaml_path, output_root),
+                    yolo_root=self.yolo_root,
+                    canonical_root=self.canonical_root if self.canonical_root.exists() else None,
+                    source="hub-yolo",
+                )
+            if self._verify_canonical_integrity(self.canonical_root):
+                logger.info("Hub sync produced a valid canonical dataset. Exporting YOLO layout.")
+                export_yolo_from_canonical(self.canonical_root, self.yolo_root)
+                return PreparedDataset(
+                    data_yaml=self._write_resolved_data_yaml(self.yaml_path, output_root),
+                    yolo_root=self.yolo_root,
+                    canonical_root=self.canonical_root,
+                    source="hub-canonical-export",
+                )
 
-        # Condition 3: Dynamic Materialization (Compute-bound Fallback)
-        if self.config.allow_fallback:
-            logger.info("Firing materialization fallback protocol...")
-            if self._trigger_materialization():
-                if self._verify_integrity(self.local_path):
-                    logger.info("Materialization successful and verified.")
-                    return self._ensure_absolute_paths(self.yaml_path)
-                else:
-                    logger.error("Materialization completed but failed schema verification.")
-            else:
-                logger.error("Materialization fallback failed.")
+        if self.config.allow_fallback and self._trigger_materialization():
+            if self._verify_canonical_integrity(self.canonical_root):
+                export_yolo_from_canonical(self.canonical_root, self.yolo_root)
+            if self._verify_yolo_integrity(self.yolo_root):
+                return PreparedDataset(
+                    data_yaml=self._write_resolved_data_yaml(self.yaml_path, output_root),
+                    yolo_root=self.yolo_root,
+                    canonical_root=self.canonical_root if self.canonical_root.exists() else None,
+                    source="materialized",
+                )
 
-        # Terminal Failure
-        logger.critical("EXHAUSTED ALL DATA PROVISIONING VECTORS. Training cannot proceed.")
+        logger.critical("Exhausted all dataset provisioning vectors. Training cannot proceed.")
         sys.exit(1)
 
-    def _verify_integrity(self, directory: Path) -> bool:
-        """
-        Structural verification of a YOLO dataset payload.
-        Ensures data.yaml exists and expected splits are resolvable.
-        """
+    def _verify_yolo_integrity(self, directory: Path) -> bool:
         if not directory.exists() or not directory.is_dir():
             return False
 
         yaml_file = directory / "data.yaml"
         if not yaml_file.exists():
-            logger.debug(f"Integrity check failed: {yaml_file} is missing.")
             return False
 
         try:
-            with open(yaml_file, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
+            with open(yaml_file, "r", encoding="utf-8") as handle:
+                cfg = yaml.safe_load(handle) or {}
 
             for split in ["train", "val"]:
                 if split not in cfg:
-                    logger.debug(f"Integrity check failed: '{split}' key missing in data.yaml.")
                     return False
-                
-                # Check conceptually if the path resolves
-                # (The path in yaml could be relative, YOLO resolves relative to the yaml file)
                 split_path = directory / cfg[split]
-                if not split_path.parent.exists():
-                     logger.debug(f"Integrity check failed: split parent {split_path.parent} missing.")
-                     return False
-                     
-            if "nc" not in cfg or "names" not in cfg:
-                logger.debug("Integrity check failed: 'nc' or 'names' missing.")
-                return False
+                if not split_path.exists():
+                    return False
 
-            return True
-
-        except Exception as e:
-            logger.debug(f"Integrity check exception: {e}")
+            return "nc" in cfg and "names" in cfg
+        except Exception:
             return False
 
-    def _ensure_absolute_paths(self, yaml_file: Path) -> Path:
-        """
-        Ultralytics gracefully accepts paths if the `path` key inside data.yaml
-        is set absolutely to the root of the dataset. This overwrites `path:` 
-        to ensure it flawlessly works regardless of CWD.
-        """
-        try:
-            with open(yaml_file, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
+    def _verify_canonical_integrity(self, directory: Path) -> bool:
+        required = [
+            directory / "classes.json",
+            directory / "train" / "metadata.jsonl",
+            directory / "val" / "metadata.jsonl",
+            directory / "parquet" / "train_metadata.parquet",
+            directory / "parquet" / "val_metadata.parquet",
+        ]
+        return all(path.exists() for path in required)
 
-            cfg["path"] = str(self.local_path)
+    def _write_resolved_data_yaml(self, yaml_file: Path, output_root: Optional[Path]) -> Path:
+        with open(yaml_file, "r", encoding="utf-8") as handle:
+            cfg = yaml.safe_load(handle) or {}
 
-            with open(yaml_file, "w", encoding="utf-8") as f:
-                yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-                
-            return yaml_file
-        except Exception as e:
-            logger.error(f"Failed patching data.yaml absolute paths: {e}")
-            return yaml_file  # Hope for the best
+        cfg["path"] = str(self.yolo_root)
+        target = yaml_file
+        if output_root is not None:
+            output_root.mkdir(parents=True, exist_ok=True)
+            target = output_root / "data_resolved.yaml"
+
+        with open(target, "w", encoding="utf-8") as handle:
+            yaml.dump(cfg, handle, default_flow_style=False, sort_keys=False)
+
+        return target
 
     def _sync_from_huggingface(self) -> bool:
-        """
-        Executes atomic synchronization using huggingface_hub.
-        Using local_dir downloads straight bypassing deep nested symlinks 
-        while preserving internal caching advantages.
-        """
         try:
             from huggingface_hub import snapshot_download
         except ImportError:
-            logger.error("huggingface_hub not installed. Cannot sync. Run: pip install huggingface_hub")
+            logger.error("huggingface_hub not installed. Cannot sync.")
             return False
 
         try:
-            self.local_path.mkdir(parents=True, exist_ok=True)
-            snapshot_download(
-                repo_id=self.config.hf_repo_id,
-                repo_type="dataset",
-                local_dir=self.local_path,
-                local_dir_use_symlinks=False,  # Ensures fully materialized files on Windows
-                cache_dir=self.config.cache_dir,
-                resume_download=True,
-            )
+            targets = [self.yolo_root]
+            if self.canonical_root != self.yolo_root:
+                targets.append(self.canonical_root)
+
+            for target in targets:
+                target.mkdir(parents=True, exist_ok=True)
+                snapshot_download(
+                    repo_id=self.config.hf_repo_id,
+                    repo_type="dataset",
+                    local_dir=target,
+                    local_dir_use_symlinks=False,
+                    cache_dir=self.config.cache_dir,
+                    resume_download=True,
+                )
             return True
-        except Exception as e:
-            logger.error(f"HF sync exception: {e}")
+        except Exception as exc:
+            logger.error("HF sync exception: %s", exc)
             return False
 
     def _trigger_materialization(self) -> bool:
-        """
-        Fallback computing vector. Invokes the materialize script functions natively.
-        """
         try:
-            # Import natively rather than running subprocess
-            from yoloml.data.materialize import main as materialize_main
-            logger.info("Executing native materialization protocol...")
-            # The materializer itself uses Hydra or config loading. 
-            # Because it currently uses pure CLI, wait, does it use Hydra?
-            # We didn't migrate materialize_bouncer.py to Hydra in the previous step
-            # because the user said it was already config-driven via sources.yaml.
-            # So calling main() might parse sys.argv.
-            # Instead of fighting sys.argv, we'll try to execute it as a subprocess if needed,
-            # but ideally we just invoke its internal logic.
-            import subprocess
-            import sys
             result = subprocess.run(
                 [sys.executable, "-m", "yoloml.data.materialize"],
-                cwd=str(self.local_path.parent)
+                cwd=str(self.yolo_root.parent),
+                check=False,
             )
             return result.returncode == 0
-        except Exception as e:
-            logger.error(f"Materialization logic failed to execute: {e}")
+        except Exception as exc:
+            logger.error("Materialization logic failed to execute: %s", exc)
             return False

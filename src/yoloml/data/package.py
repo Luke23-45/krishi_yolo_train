@@ -9,14 +9,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import hydra
-from yoloml.config import setup_config, YoloMLConfig, PackageConfig
-
+from yoloml.config import DataPackageConfig
 from yoloml.data.canonical import (
     create_archive,
     export_webdataset_from_canonical,
     upload_dataset_folder,
 )
+from yoloml.pipeline import DataManifest, load_cli_config, parse_stage_args, read_manifest
 
 
 def validate_canonical_root(dataset_root: Path) -> None:
@@ -38,21 +37,31 @@ def validate_canonical_root(dataset_root: Path) -> None:
         )
 
 
-setup_config()
+def main(argv: list[str] | None = None) -> None:
+    cli_args, overrides = parse_stage_args("Package a canonical dataset", argv=argv)
+    cfg = load_cli_config(overrides=overrides)
+    args: DataPackageConfig = cfg.data_package
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def main(cfg: YoloMLConfig) -> None:
-    args: PackageConfig = cfg.package
+    if cli_args.manifest:
+        args.manifest = cli_args.manifest
+    if cli_args.output_root:
+        args.output_root = cli_args.output_root
 
-    dataset_root = Path(args.input).resolve()
+    if args.manifest:
+        manifest = read_manifest(args.manifest, DataManifest)
+        dataset_root = Path(manifest.canonical_root).resolve()
+    else:
+        dataset_root = Path(args.input).resolve()
+
     validate_canonical_root(dataset_root)
+    output_root = Path(args.output_root).resolve() if args.output_root else dataset_root.parent
 
     publish_root: Path | None = None
     if args.publish_format == "webdataset":
         publish_root = (
             Path(args.publish_output).resolve()
             if args.publish_output
-            else dataset_root.parent / f"{dataset_root.name}_webdataset"
+            else output_root / f"{dataset_root.name}_webdataset"
         )
         manifest = export_webdataset_from_canonical(
             dataset_root,
@@ -67,14 +76,18 @@ def main(cfg: YoloMLConfig) -> None:
         }, indent=2))
     elif args.publish_output:
         raise ValueError(
-            "--publish-output is only supported with --publish-format webdataset."
+            "--publish-output is only supported with publish_format=webdataset."
         )
     else:
         publish_root = dataset_root
 
     if args.archive_format:
         suffix = ".zip" if args.archive_format == "zip" else ".tar.gz"
-        archive_output = Path(args.archive_output).resolve() if args.archive_output else dataset_root.with_suffix(suffix)
+        archive_output = (
+            Path(args.archive_output).resolve()
+            if args.archive_output
+            else output_root / f"{dataset_root.name}{suffix}"
+        )
         archive_path = create_archive(dataset_root, archive_output, args.archive_format)
         print(f"Created archive: {archive_path}")
 
@@ -87,6 +100,7 @@ def main(cfg: YoloMLConfig) -> None:
             use_large_folder=(args.upload_strategy == "large-folder"),
         )
         print(f"Uploaded dataset to {url}")
+
 
 if __name__ == "__main__":
     main()

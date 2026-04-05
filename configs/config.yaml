@@ -1,4 +1,5 @@
 defaults:
+  - run: default
   - dataset: default
   - telemetry: default
   - training: default
@@ -6,5 +7,7 @@ defaults:
   - validation: default
   - export: default
   - visualization: default
-  - package: default
+  - data_package: default
+  - model_validation: default
+  - model_package: default
   - _self_

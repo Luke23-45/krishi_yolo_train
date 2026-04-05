@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 import yaml
-import hydra
-from yoloml.config import setup_config, YoloMLConfig, ValidationConfig
+from yoloml.config import ValidationConfig
+from yoloml.pipeline import DataManifest, load_cli_config, parse_stage_args, read_manifest
 
 from yoloml.data.canonical import IMAGE_EXTENSIONS, read_schema_names, read_split_metadata
 
@@ -63,7 +63,11 @@ def _check_images_readable(image_paths: List[Path]) -> Dict:
     return {"checked": len(image_paths), "corrupt": corrupt}
 
 
-def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None:
+def validate_canonical(
+    dataset_dir: Path,
+    do_check_images: bool = False,
+    report_path: Path | None = None,
+) -> Path:
     logger.info("Validating canonical dataset: %s", dataset_dir)
 
     required = [
@@ -166,14 +170,20 @@ def validate_canonical(dataset_dir: Path, do_check_images: bool = False) -> None
         "image_checks": image_results,
         "curation": curation_summary,
     }
-    report_path = dataset_dir / "validation_report.json"
+    report_path = report_path or (dataset_dir / "validation_report.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Report saved: %s", report_path)
     if errors:
         sys.exit(1)
+    return report_path
 
 
-def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
+def validate_yolo(
+    dataset_dir: Path,
+    do_check_images: bool = False,
+    report_path: Path | None = None,
+) -> Path:
     logger.info("Validating YOLO dataset: %s", dataset_dir)
 
     required = [
@@ -282,24 +292,42 @@ def validate_yolo(dataset_dir: Path, do_check_images: bool = False) -> None:
         "image_checks": image_results,
         "curation": curation_summary,
     }
-    report_path = dataset_dir / "validation_report.json"
+    report_path = report_path or (dataset_dir / "validation_report.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Report saved: %s", report_path)
     if errors:
         sys.exit(1)
+    return report_path
 
 
-setup_config()
+def _resolve_dataset_from_manifest(manifest_path: str, dataset_format: str) -> Path:
+    manifest = read_manifest(manifest_path, DataManifest)
+    if dataset_format == "canonical":
+        return Path(manifest.canonical_root).resolve()
+    return Path(manifest.yolo_root).resolve()
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def main(cfg: YoloMLConfig) -> None:
+
+def main(argv: list[str] | None = None) -> None:
+    cli_args, overrides = parse_stage_args("Validate a canonical or YOLO dataset", argv=argv)
+    cfg = load_cli_config(overrides=overrides)
     args: ValidationConfig = cfg.validation
 
-    dataset_dir = Path(args.dataset).resolve()
+    if cli_args.output_root:
+        args.output_root = cli_args.output_root
+    if cli_args.manifest:
+        args.manifest = cli_args.manifest
+
+    dataset_dir = (
+        _resolve_dataset_from_manifest(args.manifest, args.format)
+        if args.manifest
+        else Path(args.dataset).resolve()
+    )
+    report_path = Path(args.output_root).resolve() / f"{args.format}_validation_report.json" if args.output_root else None
     if args.format == "canonical":
-        validate_canonical(dataset_dir, do_check_images=args.verify_images)
+        validate_canonical(dataset_dir, do_check_images=args.verify_images, report_path=report_path)
     else:
-        validate_yolo(dataset_dir, do_check_images=args.verify_images)
+        validate_yolo(dataset_dir, do_check_images=args.verify_images, report_path=report_path)
 
 if __name__ == "__main__":
     main()

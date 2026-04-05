@@ -1,4 +1,5 @@
-data: krishi_bouncer_dataset/data.yaml
+manifest: null
+data: null
 model: yolov8n.pt
 epochs: 100
 batch: 16
@@ -11,3 +12,4 @@ rfs_threshold: null
 beta: 0.9999
 no_class_weights: false
 dry_run: false
+output_root: null

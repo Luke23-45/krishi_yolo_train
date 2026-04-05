@@ -1,5 +1,7 @@
-local_path: krishi_bouncer_dataset
+yolo_root: krishi_bouncer_dataset
+canonical_root: hf_dataset
 hf_repo_id: hellxhell/krishi-bouncer-dataset
 cache_dir: null
 force_download: false
 allow_fallback: true
+local_path: null

@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("krishi.materialize")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 DEFAULT_CURATION = {
@@ -80,6 +80,14 @@ def resolve_configured_path(path_value: str | Path) -> Path:
     if expanded.is_absolute():
         return expanded
     return (PROJECT_ROOT / expanded).resolve()
+
+
+def resolve_output_roots(config_path: Path) -> tuple[Path, Path]:
+    cfg = load_config(config_path)
+    output_cfg = cfg["output"]
+    canonical_root = resolve_configured_path(output_cfg.get("canonical_root", "hf_dataset"))
+    yolo_root = resolve_configured_path(output_cfg.get("yolo_root", output_cfg["root"]))
+    return canonical_root, yolo_root
 
 
 def load_curation_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -726,7 +734,7 @@ def materialize(
     logger.info("    1. Validate canonical: python -m yoloml.data.validate --dataset hf_dataset --format canonical")
     logger.info("    2. Validate YOLO:      python -m yoloml.data.validate --dataset krishi_bouncer_dataset --format yolo")
     logger.info(
-        "    3. Package/upload:     python -m yoloml.data.package --input hf_dataset --repo-id <repo> --publish-format webdataset --upload-strategy large-folder"
+        "    3. Package/upload:     yoloml-data-package data_package.input=hf_dataset data_package.repo_id=<repo>"
     )
 
 

@@ -1,3 +1,5 @@
+manifest: null
 dataset: krishi_bouncer_dataset
 format: yolo
 verify_images: false
+output_root: null

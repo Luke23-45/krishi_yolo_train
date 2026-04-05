@@ -1,8 +1,9 @@
-model: runs/detect/best.pt
+manifest: null
+model: null
 data: null
 levels:
   - fp32
   - fp16
   - int8
 imgsz: 416
-output: outputs/quantized
+output_root: null

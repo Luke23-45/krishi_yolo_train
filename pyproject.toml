@@ -71,9 +71,13 @@ all = [
 yoloml-materialize = "yoloml.data.materialize:main"
 yoloml-validate = "yoloml.data.validate:main"
 yoloml-export-yolo = "yoloml.data.export_yolo:main"
-yoloml-package = "yoloml.data.package:main"
+yoloml-data-package = "yoloml.data.package:main"
+yoloml-package = "yoloml.models.package:main"
 yoloml-train = "yoloml.training.train:main"
 yoloml-quantize = "yoloml.models.quantize:main"
+yoloml-model-validate = "yoloml.models.validate:main"
+yoloml-launch = "yoloml.launch:main"
+yoloml-audit = "yoloml.audit:main"
 yoloml-visualize = "yoloml.utils.visualize:main"
 
 [project.urls]

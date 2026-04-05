@@ -1,8 +1,11 @@
+manifest: null
 input: hf_dataset
 repo_id: null
 private: false
 upload_strategy: large-folder
-webdataset: true
+publish_format: webdataset
+publish_output: null
 shard_size_mb: 1024
 archive_format: null
-archive_out: null
+archive_output: null
+output_root: null

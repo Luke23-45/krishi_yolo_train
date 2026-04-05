@@ -35,13 +35,23 @@ import os
 import shutil
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
-import hydra
-from yoloml.config import setup_config, YoloMLConfig, TrainingConfig, TelemetryConfig
+from yoloml.config import TelemetryConfig, TrainingConfig
+from yoloml.pipeline import (
+    DataManifest,
+    TrainManifest,
+    create_run_context,
+    ensure_stage_dir,
+    load_cli_config,
+    parse_stage_args,
+    read_manifest,
+    snapshot_config,
+    write_manifest,
+)
 from yoloml.utils.telemetry import setup_telemetry
 
 logging.basicConfig(
@@ -51,7 +61,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("krishi.train")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -322,7 +332,15 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
-def train(args: TrainingConfig, data_yaml: Path, telemetry_cfg: TelemetryConfig) -> None:
+def train(
+    args: TrainingConfig,
+    data_yaml: Path,
+    telemetry_cfg: TelemetryConfig,
+    output_root: Path,
+    training_config_snapshot: Path,
+    run_id: str,
+    data_manifest_path: Optional[Path] = None,
+) -> TrainManifest:
     if not data_yaml.exists():
         logger.error("data.yaml not found: %s", data_yaml)
         sys.exit(1)
@@ -416,17 +434,32 @@ def train(args: TrainingConfig, data_yaml: Path, telemetry_cfg: TelemetryConfig)
         balance_report["rfs_threshold"] = args.rfs_threshold or "auto"
         balance_report["repeat_factor_distribution"] = dict(Counter(repeat_factors.values()))
 
-    report_dir = PROJECT_ROOT / "outputs" / "training"
-    report_dir.mkdir(parents=True, exist_ok=True)
+    report_dir = ensure_stage_dir(output_root)
     report_path = report_dir / "balance_report.json"
     report_path.write_text(json.dumps(balance_report, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Balance report saved: %s", report_path)
+
+    telemetry_run_name = telemetry_cfg.run_name or args.name or output_root.name
+    manifest = TrainManifest(
+        run_id=run_id,
+        data_manifest=str(data_manifest_path) if data_manifest_path else None,
+        verified_data_yaml=str(training_data_yaml.resolve()),
+        training_config_snapshot=str(training_config_snapshot.resolve()),
+        output_root=str(output_root.resolve()),
+        balance_report=str(report_path.resolve()),
+        telemetry_project=telemetry_cfg.project,
+        telemetry_run_name=telemetry_run_name,
+        best_weights=None,
+        last_weights=None,
+        valid=False,
+    )
 
     if args.dry_run:
         logger.info("=" * 64)
         logger.info("DRY RUN complete. No training launched.")
         logger.info("=" * 64)
-        return
+        manifest.valid = True
+        return manifest
 
     logger.info("-" * 64)
     logger.info("STEP 4: Launching YOLOv8 training")
@@ -444,7 +477,7 @@ def train(args: TrainingConfig, data_yaml: Path, telemetry_cfg: TelemetryConfig)
         inject_class_weights(model, weights)
 
     device = resolve_device(args.device)
-    experiment_name = telemetry_cfg.run_name or args.name or f"krishi_bouncer_{time.strftime('%Y%m%d_%H%M%S')}"
+    experiment_name = telemetry_run_name
 
     logger.info("Device:      %s", device)
     logger.info("Experiment:  %s", experiment_name)
@@ -455,42 +488,80 @@ def train(args: TrainingConfig, data_yaml: Path, telemetry_cfg: TelemetryConfig)
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
+        "project": str(output_root.parent),
         "name": experiment_name,
         "device": device,
         "patience": args.patience,
         "exist_ok": True,
     }
 
-    if telemetry_cfg.enable_wandb:
-        kwargs["project"] = telemetry_cfg.project
-
     results = model.train(**kwargs)
+
+    save_dir = Path(getattr(results, "save_dir", getattr(model, "trainer", object()).save_dir if hasattr(getattr(model, "trainer", None), "save_dir") else output_root))
+    if not save_dir.is_absolute():
+        save_dir = (PROJECT_ROOT / save_dir).resolve()
+    best_weights = save_dir / "weights" / "best.pt"
+    last_weights = save_dir / "weights" / "last.pt"
+
+    manifest.best_weights = str(best_weights.resolve()) if best_weights.exists() else None
+    manifest.last_weights = str(last_weights.resolve()) if last_weights.exists() else None
+    manifest.valid = bool(manifest.best_weights or manifest.last_weights)
 
     logger.info("=" * 64)
     logger.info("TRAINING COMPLETE")
     logger.info("=" * 64)
-    logger.info("Results directory: runs/detect/%s", experiment_name)
-    logger.info("Best weights:      runs/detect/%s/weights/best.pt", experiment_name)
+    logger.info("Results directory: %s", save_dir)
+    logger.info("Best weights:      %s", best_weights)
+    return manifest
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
-setup_config()
+def main(argv: list[str] | None = None) -> None:
+    cli_args, overrides = parse_stage_args("Run the YOLO training stage", argv=argv)
+    cfg = load_cli_config(overrides=overrides)
+    if cli_args.run_id:
+        cfg.run.run_id = cli_args.run_id
+    if cli_args.manifest:
+        cfg.training.manifest = cli_args.manifest
+    if cli_args.output_root:
+        cfg.training.output_root = cli_args.output_root
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def main(cfg: YoloMLConfig) -> None:
-    # 1. Telemetry & Tracking Bootstrap
+    run_context = create_run_context(cfg, run_id=cfg.run.run_id)
+    output_root = (
+        ensure_stage_dir(Path(cfg.training.output_root).resolve())
+        if cfg.training.output_root
+        else ensure_stage_dir(run_context.train_dir)
+    )
+    training_snapshot = snapshot_config(cfg, output_root / "resolved_config.json")
+
+    data_manifest_path: Optional[Path] = None
+    if cfg.training.manifest:
+        data_manifest_path = Path(cfg.training.manifest).resolve()
+        data_manifest = read_manifest(data_manifest_path, DataManifest)
+        verified_data_yaml = Path(data_manifest.yolo_root).resolve() / "data.yaml"
+    elif cfg.training.data:
+        verified_data_yaml = Path(cfg.training.data).resolve()
+    else:
+        from yoloml.data.dataset import DatasetManager
+
+        manager = DatasetManager(cfg.dataset)
+        prepared = manager.prepare_data(output_root=output_root)
+        verified_data_yaml = prepared.data_yaml
+
     setup_telemetry(cfg.telemetry)
-
-    # 2. Data Provisioning via Manager
-    from yoloml.data.dataset import DatasetManager
-    manager = DatasetManager(cfg.dataset)
-    verified_data_yaml = manager.prepare_data()
-
-    # 3. Model Training
-    train(cfg.training, verified_data_yaml, cfg.telemetry)
+    manifest = train(
+        cfg.training,
+        verified_data_yaml,
+        cfg.telemetry,
+        output_root=output_root,
+        training_config_snapshot=training_snapshot,
+        run_id=run_context.run_id,
+        data_manifest_path=data_manifest_path,
+    )
+    write_manifest(output_root / "train_manifest.json", manifest)
 
 if __name__ == "__main__":
     main()
