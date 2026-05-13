@@ -1,8 +1,0 @@
-manifest: null
-output_root: null
-package_name: krishi_bouncer_model_bundle
-archive_format: zip
-include_source_weights: true
-include_reports: true
-repo_id: null
-private: false

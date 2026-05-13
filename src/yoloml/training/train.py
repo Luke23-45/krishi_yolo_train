@@ -1,14 +1,13 @@
 """
 yoloml/training/train.py
---------------------------
+-------------------------
 End-to-end YOLOv8 training pipeline with class-imbalance mitigation.
 
-Implements two complementary, research-backed strategies:
+Implements two complementary strategies:
 
 1. Offline Repeat Factor Sampling (RFS)
    Gupta et al., "LVIS: A Dataset for Large Vocabulary Instance Segmentation", CVPR 2019
-   Creates a physically rebalanced copy of the training set by repeating images
-   that contain rare classes. Avoids hacking the Ultralytics dataloader.
+   Creates a rebalanced copy of the training set by repeating images that contain rare classes.
 
 2. Class-Balanced Loss Weighting
    Cui et al., "Class-Balanced Loss Based on Effective Number of Samples", CVPR 2019
@@ -16,14 +15,9 @@ Implements two complementary, research-backed strategies:
    into the model's classification loss before training begins.
 
 Usage:
-    python -m yoloml.training.train \\
-        --data krishi_bouncer_dataset/data.yaml \\
-        --balance \\
-        --epochs 100 \\
-        --batch 16 \\
-        --imgsz 640
-
-    python -m yoloml.training.train --data krishi_bouncer_dataset/data.yaml --dry-run
+    python -m yoloml.training.train
+    python -m yoloml.training.train training.epochs=200 training.batch=32
+    python -m yoloml.training.train training.dry_run=true
 """
 
 from __future__ import annotations
@@ -34,42 +28,34 @@ import math
 import os
 import shutil
 import sys
-import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import yaml
-from yoloml.config import TelemetryConfig, TrainingConfig
+
+from yoloml.config import TelemetryConfig, TrainingConfig, load_config
 from yoloml.pipeline import (
     DataManifest,
     TrainManifest,
     create_run_context,
     ensure_stage_dir,
-    load_cli_config,
-    parse_stage_args,
     read_manifest,
     snapshot_config,
     write_manifest,
 )
+from yoloml.utils.provisioning import ensure_dataset_ready
 from yoloml.utils.telemetry import setup_telemetry
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)-28s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("krishi.train")
+logger = logging.getLogger("yoloml.train")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
- 
- 
+
+
 def get_labels_dir(image_dir: Path) -> Path:
-    """Safely replace the last occurrence of 'images' with 'labels' in a path."""
     parts = list(image_dir.parts)
-    # Iterate backwards to only replace the relevant 'images' folder
     for i in reversed(range(len(parts))):
         if parts[i] == "images":
             parts[i] = "labels"
@@ -77,24 +63,15 @@ def get_labels_dir(image_dir: Path) -> Path:
     return Path(*parts)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DATASET ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def scan_class_distribution(label_dir: Path) -> Tuple[Counter, Dict[str, Set[int]]]:
-    """
-    Scan YOLO label files and return:
-      - class_counts: Counter mapping class_id → total instance count
-      - image_classes: dict mapping image_stem → set of class_ids present
-    """
+def scan_class_distribution(label_dir: Path) -> tuple[Counter, dict[str, set[int]]]:
     class_counts: Counter = Counter()
-    image_classes: Dict[str, Set[int]] = {}
+    image_classes: dict[str, set[int]] = {}
 
     for label_path in sorted(label_dir.iterdir()):
         if not label_path.is_file() or label_path.suffix.lower() != ".txt":
             continue
         stem = label_path.stem
-        classes_in_image: Set[int] = set()
+        classes_in_image: set[int] = set()
         content = label_path.read_text(encoding="utf-8").strip()
         if not content:
             image_classes[stem] = classes_in_image
@@ -110,34 +87,18 @@ def scan_class_distribution(label_dir: Path) -> Tuple[Counter, Dict[str, Set[int
     return class_counts, image_classes
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# REPEAT FACTOR SAMPLING (Gupta et al., CVPR 2019)
-# ═══════════════════════════════════════════════════════════════════════════════
+def effective_number(n: float, beta: float) -> float:
+    if abs(beta - 1.0) < 1e-12:
+        return float(n)
+    if beta < 1e-12:
+        return 1.0
+    return (1.0 - beta ** n) / (1.0 - beta)
+
 
 def compute_repeat_factors(
-    image_classes: Dict[str, Set[int]],
-    threshold: Optional[float] = None,
-) -> Dict[str, int]:
-    """
-    Compute per-image integer repeat factors using LVIS-style RFS.
-
-    For each class c, the image-level frequency is:
-        f(c) = |{images containing c}| / |{all images}|
-
-    The per-class repeat factor is:
-        r(c) = max(1, sqrt(t / f(c)))
-
-    The per-image repeat factor is:
-        R(i) = ceil(max(r(c) for c in classes_in_image_i))
-
-    Args:
-        image_classes: dict mapping image_stem → set of class_ids
-        threshold: RFS threshold t. If None, auto-computed as the median
-                   class frequency (robust default for long-tail distributions).
-
-    Returns:
-        dict mapping image_stem → integer repeat count (≥ 1)
-    """
+    image_classes: dict[str, set[int]],
+    threshold: float | None = None,
+) -> dict[str, int]:
     total_images = len(image_classes)
     if total_images == 0:
         return {}
@@ -158,7 +119,7 @@ def compute_repeat_factors(
     for c, f in freqs.items():
         class_factors[c] = max(1.0, math.sqrt(threshold / max(f, 1e-12)))
 
-    repeat_factors: Dict[str, int] = {}
+    repeat_factors: dict[str, int] = {}
     for stem, classes in image_classes.items():
         if not classes:
             repeat_factors[stem] = 1
@@ -172,19 +133,9 @@ def compute_repeat_factors(
 def create_balanced_dataset(
     source_dir: Path,
     output_dir: Path,
-    repeat_factors: Dict[str, int],
-    yolo_cfg: Dict[str, Any],
-) -> Dict[str, int]:
-    """
-    Create an RFS-balanced copy of the YOLO training set by physically
-    duplicating images and labels for under-represented classes.
-
-    Uses os.link() (hard links) when possible to avoid wasting disk space.
-    Falls back to shutil.copy2() on cross-device or unsupported filesystems.
-
-    Returns:
-        stats dict with original_images, balanced_images, duplicated_images
-    """
+    repeat_factors: dict[str, int],
+    yolo_cfg: dict[str, Any],
+) -> dict[str, int]:
     train_rel = yolo_cfg.get("train", "images/train")
     if isinstance(train_rel, list):
         train_rel = train_rel[0]
@@ -229,8 +180,7 @@ def create_balanced_dataset(
         except (OSError, NotImplementedError):
             shutil.copy2(src, dst)
 
-    # Build image mapping for case-insensitive lookup
-    available_images = {}
+    available_images: dict[str, Path] = {}
     if src_images.exists():
         for img_file in src_images.iterdir():
             if img_file.is_file() and img_file.suffix.lower() in IMAGE_EXTENSIONS:
@@ -273,30 +223,11 @@ def create_balanced_dataset(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLASS-BALANCED LOSS WEIGHTS (Cui et al., CVPR 2019)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def effective_number(n: float, beta: float) -> float:
-    """Compute the effective number of samples: E_n = (1 - β^n) / (1 - β)."""
-    if abs(beta - 1.0) < 1e-12:
-        return float(n)
-    if beta < 1e-12:
-        return 1.0
-    return (1.0 - beta ** n) / (1.0 - beta)
-
-
 def compute_class_weights(
-    class_counts: Dict[int, int],
+    class_counts: dict[int, int],
     num_classes: int,
     beta: float = 0.9999,
-) -> List[float]:
-    """
-    Compute normalized per-class loss weights using the effective number formula.
-
-    Returns a list of length num_classes where weights[i] is the weight for class i.
-    Classes with fewer samples receive higher weights.
-    """
+) -> list[float]:
     eff_nums = []
     for c in range(num_classes):
         n = class_counts.get(c, 1)
@@ -308,42 +239,33 @@ def compute_class_weights(
     return weights
 
 
-def inject_class_weights(model, weights: List[float]) -> bool:
+def inject_class_weights(model: Any, weights: list[float]) -> bool:
     try:
         import torch
         from ultralytics.utils.loss import v8DetectionLoss
 
         weight_tensor = torch.tensor(weights, dtype=torch.float32)
 
-        # Preserve the original initialization
         original_init = v8DetectionLoss.__init__
 
-        def patched_init(self, *args, **kwargs):
-            # Pass all arguments to original init safely
+        def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
             original_init(self, *args, **kwargs)
-            # Override self.bce with the class-weighted version
             self.bce = torch.nn.BCEWithLogitsLoss(
                 pos_weight=weight_tensor.to(self.device),
                 reduction="none",
             )
 
-        # Apply the patch
         v8DetectionLoss.__init__ = patched_init
-        
+
         logger.info("Injected class-balanced weights via monkey-patching v8DetectionLoss.")
         return True
 
     except Exception as exc:
-        logger.warning(f"Could not inject class-balanced weights: {exc}")
+        logger.warning("Could not inject class-balanced weights: %s", exc)
         return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TRAINING
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def resolve_device(requested: str) -> str:
-    """Resolve the training device with CPU fallback."""
     if requested == "auto":
         try:
             import torch
@@ -365,24 +287,23 @@ def train(
     output_root: Path,
     training_config_snapshot: Path,
     run_id: str,
-    data_manifest_path: Optional[Path] = None,
+    data_manifest_path: Path | None = None,
 ) -> TrainManifest:
     if not data_yaml.exists():
-        logger.error("data.yaml not found: %s", data_yaml)
-        sys.exit(1)
+        raise FileNotFoundError(f"data.yaml not found: {data_yaml}")
 
     dataset_dir = data_yaml.parent
 
-    with open(data_yaml, "r", encoding="utf-8") as fh:
+    with open(data_yaml, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     num_classes = int(cfg["nc"])
     if isinstance(cfg["names"], list):
-        names = {i: n for i, n in enumerate(cfg["names"])}
+        names = dict(enumerate(cfg["names"]))
     else:
         names = {int(k): v for k, v in cfg["names"].items()}
 
     logger.info("=" * 64)
-    logger.info("  KRISHI VAIDYA — Training Pipeline v1.0")
+    logger.info("  YOLOML - Training Pipeline v1.0")
     logger.info("=" * 64)
     logger.info("Dataset:     %s", dataset_dir)
     logger.info("Classes:     %d", num_classes)
@@ -390,17 +311,22 @@ def train(
     logger.info("Epochs:      %d", args.epochs)
     logger.info("Batch:       %d", args.batch)
     logger.info("Image size:  %d", args.imgsz)
-    logger.info("Balance:     %s", "RFS enabled" if args.balance else "disabled")
-    logger.info("Beta:        %s", args.beta)
+    logger.info("Device:      %s", args.device)
+    logger.info("Patience:    %d", args.patience)
+    logger.info("-" * 64)
+    logger.info("CLASS IMBALANCE MITIGATION:")
+    logger.info("  Balance:    %s", "enabled" if args.balance else "disabled")
+    logger.info("  RFS threshold: %s", args.rfs_threshold or "auto")
+    logger.info("  Beta:       %.4f", args.beta)
+    logger.info("-" * 64)
 
     train_rel = cfg.get("train", "images/train")
     if isinstance(train_rel, list):
         train_rel = train_rel[0]
-    
+
     label_dir = get_labels_dir((dataset_dir / train_rel).resolve())
     if not label_dir.exists():
-        logger.error("Training labels not found: %s", label_dir)
-        sys.exit(1)
+        raise FileNotFoundError(f"Training labels not found: {label_dir}")
 
     logger.info("-" * 64)
     logger.info("STEP 1: Scanning class distribution")
@@ -424,15 +350,25 @@ def train(
             logger.info("  Repeat factor %d: %d images", factor, count)
 
         balanced_dir = dataset_dir.parent / f"{dataset_dir.name}_balanced"
-        if balanced_dir.exists():
-            shutil.rmtree(balanced_dir)
 
-        logger.info("Creating balanced dataset at: %s", balanced_dir)
-        stats = create_balanced_dataset(dataset_dir, balanced_dir, repeat_factors, cfg)
-        logger.info(
-            "  Original: %d images → Balanced: %d images (+%d duplicates)",
-            stats["original_images"], stats["balanced_images"], stats["duplicated_images"],
-        )
+        is_balanced_valid = False
+        if balanced_dir.exists():
+            balanced_yaml = balanced_dir / "data.yaml"
+            if balanced_yaml.exists():
+                balanced_train_img = (balanced_dir / train_rel).resolve()
+                if balanced_train_img.exists() and any(balanced_train_img.iterdir()):
+                    is_balanced_valid = True
+                    logger.info("Existing balanced dataset detected at %s. Skipping regeneration.", balanced_dir)
+
+        if not is_balanced_valid:
+            if balanced_dir.exists():
+                shutil.rmtree(balanced_dir)
+            logger.info("Creating balanced dataset at: %s", balanced_dir)
+            stats = create_balanced_dataset(dataset_dir, balanced_dir, repeat_factors, cfg)
+            logger.info(
+                "  Original: %d images -> Balanced: %d images (+%d duplicates)",
+                stats["original_images"], stats["balanced_images"], stats["duplicated_images"],
+            )
 
         balanced_label_dir = get_labels_dir((balanced_dir / train_rel).resolve())
         balanced_counts, _ = scan_class_distribution(balanced_label_dir)
@@ -442,7 +378,7 @@ def train(
             balanced = balanced_counts.get(cid, 0)
             ratio = balanced / max(orig, 1)
             logger.info(
-                "    %2d | %-20s | %7d → %7d (×%.1f)",
+                "    %2d | %-20s | %7d -> %7d (x%.1f)",
                 cid, names[cid], orig, balanced, ratio,
             )
 
@@ -455,7 +391,7 @@ def train(
     for cid in sorted(names.keys()):
         logger.info("  %2d | %-20s | weight = %.4f", cid, names[cid], weights[cid])
 
-    balance_report = {
+    balance_report: dict[str, Any] = {
         "original_distribution": dict(class_counts),
         "class_weights": {names[c]: round(w, 6) for c, w in enumerate(weights)},
         "beta": args.beta,
@@ -498,9 +434,8 @@ def train(
 
     try:
         from ultralytics import YOLO
-    except ImportError:
-        logger.error("ultralytics not installed. Run: pip install ultralytics")
-        sys.exit(1)
+    except ImportError as exc:
+        raise ImportError("ultralytics not installed. Run: pip install ultralytics") from exc
 
     model = YOLO(args.model)
 
@@ -516,17 +451,49 @@ def train(
     logger.info("Data YAML:   %s", training_data_yaml)
     logger.info("Artifacts:   %s", artifacts_dir)
 
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "data": str(training_data_yaml),
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
-        "project": str(output_root),
-        "name": "artifacts",
         "device": device,
         "patience": args.patience,
         "exist_ok": True,
+        "model": args.model,
+        "project": str(output_root),
+        "name": "artifacts",
+        
+        # Advanced hyperparameters
+        "optimizer": args.optimizer,
+        "lr0": args.lr0,
+        "lrf": args.lrf,
+        "momentum": args.momentum,
+        "weight_decay": args.weight_decay,
+        "warmup_epochs": args.warmup_epochs,
+        "warmup_momentum": args.warmup_momentum,
+        "warmup_bias_lr": args.warmup_bias_lr,
+        "box": args.box,
+        "cls": args.cls,
+        "dfl": args.dfl,
+        "mosaic": args.mosaic,
+        "mixup": args.mixup,
+        "copy_paste": args.copy_paste,
+        "close_mosaic": args.close_mosaic,
+        "auto": args.auto,
+        "fraction": args.fraction,
+        "val": args.val,
+        "save_period": args.save_period,
+        "cache": args.cache,
+        "rect": args.rect,
+        "single_cls": args.single_cls,
+        "plots": args.plots,
+        "seed": args.seed,
+        "deterministic": args.deterministic,
+        "workers": args.workers,
     }
+
+    if args.name:
+        kwargs["name"] = args.name
 
     results = model.train(**kwargs)
 
@@ -548,73 +515,19 @@ def train(
     return manifest
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args(
-        "Run the YOLO training stage",
-        argv=argv,
-        extra_arguments=[
-            (("--data",), {"type": str, "default": None}),
-            (("--model",), {"type": str, "default": None}),
-            (("--epochs",), {"type": int, "default": None}),
-            (("--batch",), {"type": int, "default": None}),
-            (("--imgsz",), {"type": int, "default": None}),
-            (("--patience",), {"type": int, "default": None}),
-            (("--device",), {"type": str, "default": None}),
-            (("--name",), {"type": str, "default": None}),
-            (("--rfs-threshold",), {"dest": "rfs_threshold", "type": float, "default": None}),
-            (("--beta",), {"type": float, "default": None}),
-            (("--balance",), {"action": "store_true"}),
-            (("--no-class-weights",), {"dest": "no_class_weights", "action": "store_true"}),
-            (("--dry-run",), {"dest": "dry_run", "action": "store_true"}),
-        ],
-    )
-    cfg = load_cli_config(overrides=overrides)
-    if cli_args.run_id:
-        cfg.run.run_id = cli_args.run_id
-    if cli_args.manifest:
-        cfg.training.manifest = cli_args.manifest
-    if cli_args.output_root:
-        cfg.training.output_root = cli_args.output_root
-    if cli_args.data:
-        cfg.training.data = cli_args.data
-    if cli_args.model:
-        cfg.training.model = cli_args.model
-    if cli_args.epochs is not None:
-        cfg.training.epochs = cli_args.epochs
-    if cli_args.batch is not None:
-        cfg.training.batch = cli_args.batch
-    if cli_args.imgsz is not None:
-        cfg.training.imgsz = cli_args.imgsz
-    if cli_args.patience is not None:
-        cfg.training.patience = cli_args.patience
-    if cli_args.device:
-        cfg.training.device = cli_args.device
-    if cli_args.name:
-        cfg.training.name = cli_args.name
-    if cli_args.balance:
-        cfg.training.balance = True
-    if cli_args.rfs_threshold is not None:
-        cfg.training.rfs_threshold = cli_args.rfs_threshold
-    if cli_args.beta is not None:
-        cfg.training.beta = cli_args.beta
-    if cli_args.no_class_weights:
-        cfg.training.no_class_weights = True
-    if cli_args.dry_run:
-        cfg.training.dry_run = True
+    cfg = load_config(overrides=argv)
 
     run_context = create_run_context(cfg, run_id=cfg.run.run_id)
     output_root = (
-        ensure_stage_dir(Path(cfg.training.output_root).resolve())
+        Path(cfg.training.output_root).resolve()
         if cfg.training.output_root
-        else ensure_stage_dir(run_context.train_dir)
+        else run_context.train_dir
     )
+    ensure_stage_dir(output_root)
     training_snapshot = snapshot_config(cfg, output_root / "resolved_config.json")
 
-    data_manifest_path: Optional[Path] = None
+    data_manifest_path: Path | None = None
     if cfg.training.manifest:
         data_manifest_path = Path(cfg.training.manifest).resolve()
         data_manifest = read_manifest(data_manifest_path, DataManifest)
@@ -622,11 +535,7 @@ def main(argv: list[str] | None = None) -> None:
     elif cfg.training.data:
         verified_data_yaml = Path(cfg.training.data).resolve()
     else:
-        from yoloml.data.dataset import DatasetManager
-
-        manager = DatasetManager(cfg.dataset)
-        prepared = manager.prepare_data(output_root=output_root)
-        verified_data_yaml = prepared.data_yaml
+        verified_data_yaml = ensure_dataset_ready(cfg)
 
     setup_telemetry(cfg.telemetry)
     manifest = train(
@@ -640,5 +549,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     write_manifest(output_root / "train_manifest.json", manifest)
 
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:] if len(sys.argv) > 1 else None)

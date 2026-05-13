@@ -58,6 +58,32 @@ class TrainingConfig:
     no_class_weights: bool = False
     dry_run: bool = False
     output_root: Optional[str] = None
+    optimizer: str = "auto"
+    lr0: float = 0.01
+    lrf: float = 0.01
+    momentum: float = 0.937
+    weight_decay: float = 0.0005
+    warmup_epochs: float = 3.0
+    warmup_momentum: float = 0.8
+    warmup_bias_lr: float = 0.1
+    box: float = 7.5
+    cls: float = 0.5
+    dfl: float = 1.5
+    mosaic: float = 1.0
+    mixup: float = 0.0
+    copy_paste: float = 0.0
+    close_mosaic: int = 10
+    auto: bool = True
+    fraction: float = 1.0
+    val: bool = True
+    save_period: int = -1
+    cache: bool = False
+    rect: bool = False
+    single_cls: bool = False
+    plots: bool = True
+    seed: int = 0
+    deterministic: bool = True
+    workers: int = 8
 
 
 @dataclass
@@ -113,6 +139,12 @@ class ModelValidationConfig:
     manifest: Optional[str] = None
     output_root: Optional[str] = None
     require_runtime: bool = True
+    benchmark: bool = True
+    data: Optional[str] = None
+    split: str = "val"
+    imgsz: int = 640
+    batch: int = 1
+    device: str = "cpu"
 
 
 @dataclass

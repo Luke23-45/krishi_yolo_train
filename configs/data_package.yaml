@@ -1,0 +1,14 @@
+run:
+  run_id: null
+  root_dir: outputs/runs
+
+data_package:
+  input: hf_dataset
+  repo_id: null
+  private: false
+  upload_strategy: large-folder
+  publish_format: webdataset
+  publish_output: null
+  shard_size_mb: 1024
+  archive_format: null
+  archive_output: null

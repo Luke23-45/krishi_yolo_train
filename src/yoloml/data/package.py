@@ -39,22 +39,17 @@ def validate_canonical_root(dataset_root: Path) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     cli_args, overrides = parse_stage_args("Package a canonical dataset", argv=argv)
-    cfg = load_cli_config(overrides=overrides)
+    cfg = load_cli_config(config_name="data_package", overrides=overrides)
     args: DataPackageConfig = cfg.data_package
 
     if cli_args.manifest:
-        args.manifest = cli_args.manifest
-    if cli_args.output_root:
-        args.output_root = cli_args.output_root
-
-    if args.manifest:
-        manifest = read_manifest(args.manifest, DataManifest)
+        manifest = read_manifest(cli_args.manifest, DataManifest)
         dataset_root = Path(manifest.canonical_root).resolve()
     else:
         dataset_root = Path(args.input).resolve()
 
     validate_canonical_root(dataset_root)
-    output_root = Path(args.output_root).resolve() if args.output_root else dataset_root.parent
+    output_root = Path(cli_args.output_root).resolve() if cli_args.output_root else dataset_root.parent
 
     publish_root: Path | None = None
     if args.publish_format == "webdataset":

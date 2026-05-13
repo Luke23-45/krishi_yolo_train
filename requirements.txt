@@ -34,3 +34,7 @@ ultralytics>=8.2
 # Visualization
 matplotlib>=3.7
 seaborn>=0.13
+
+# NVIDIA NIM API
+openai>=1.0.0
+python-dotenv>=1.0.0

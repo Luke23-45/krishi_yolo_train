@@ -2,17 +2,21 @@
 Telemetry Integration for YoloML.
 Configures experiment tracking hooks prior to training.
 """
-import os
+from __future__ import annotations
+
 import logging
+import os
+from typing import TYPE_CHECKING
 
-from yoloml.config import TelemetryConfig, _validate_telemetry_config
+if TYPE_CHECKING:
+    from yoloml.config import TelemetryConfig
 
-logger = logging.getLogger("krishi.telemetry")
+logger = logging.getLogger("yoloml.telemetry")
+
 
 def setup_telemetry(cfg: TelemetryConfig) -> None:
-    """
-    Bootstraps the environment for W&B integration.
-    """
+    from yoloml.config import _validate_telemetry_config
+
     _validate_telemetry_config(cfg)
 
     if not cfg.enable_wandb or cfg.mode == "disabled":
@@ -20,7 +24,7 @@ def setup_telemetry(cfg: TelemetryConfig) -> None:
         os.environ["WANDB_DISABLED"] = "true"
         os.environ.pop("WANDB_PROJECT", None)
         logger.info("W&B tracking disabled via configuration.")
-        return None
+        return
 
     os.environ["WANDB_MODE"] = cfg.mode
     os.environ.pop("WANDB_DISABLED", None)
@@ -36,7 +40,7 @@ def setup_telemetry(cfg: TelemetryConfig) -> None:
         os.environ["WANDB_MODE"] = "disabled"
         os.environ["WANDB_DISABLED"] = "true"
         os.environ.pop("WANDB_PROJECT", None)
-        return None
+        return
 
     if cfg.mode == "offline":
         logger.info("Weights & Biases (W&B) offline mode enabled -> Project: %s", cfg.project)
@@ -45,5 +49,3 @@ def setup_telemetry(cfg: TelemetryConfig) -> None:
 
     if cfg.run_name:
         logger.info("Designated W&B Run Name: %s", cfg.run_name)
-
-    return None

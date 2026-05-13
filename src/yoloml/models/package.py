@@ -17,8 +17,6 @@ from yoloml.pipeline import (
     TrainManifest,
     create_run_context,
     ensure_stage_dir,
-    load_cli_config,
-    parse_stage_args,
     read_manifest,
     snapshot_config,
     write_manifest,
@@ -51,57 +49,24 @@ def _publish_bundle(bundle_root: Path, repo_id: str, private: bool) -> dict[str,
         "repo_id": repo_id,
         "repo_type": "model",
         "url": f"https://huggingface.co/{repo_id}",
-        # CommitInfo object has an 'oid' attribute containing the exact commit hash
-        "commit": commit_info.oid, 
+        "commit": commit_info.oid,
     }
 
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args(
-        "Package validated model artifacts", 
-        argv=argv,
-        extra_arguments=[
-            (("--package-name",), {"type": str, "default": None}),
-            (("--include-reports",), {"action": "store_true"}),
-            (("--include-source-weights",), {"action": "store_true"}),
-            (("--repo-id",), {"type": str, "default": None}),
-            (("--private",), {"action": "store_true"}),
-            (("--archive-format",), {"type": str, "default": None}),
-        ],
+    cfg = load_config(overrides=argv)
+    run_context = create_run_context(cfg, run_id=cfg.run.run_id)
+    output_root = (
+        Path(cfg.model_package.output_root).resolve()
+        if cfg.model_package.output_root
+        else run_context.package_dir
     )
-    cfg = load_cli_config(overrides=overrides)
-    if cli_args.run_id:
-        cfg.run.run_id = cli_args.run_id
-    if cli_args.manifest:
-        cfg.model_package.manifest = cli_args.manifest
-    if cli_args.output_root:
-        cfg.model_package.output_root = cli_args.output_root
-        
-    # Map the custom arguments to the config
-    if cli_args.package_name:
-        cfg.model_package.package_name = cli_args.package_name
-    if cli_args.include_reports:
-        cfg.model_package.include_reports = True
-    if cli_args.include_source_weights:
-        cfg.model_package.include_source_weights = True
-    if cli_args.repo_id:
-        cfg.model_package.repo_id = cli_args.repo_id
-    if cli_args.private:
-        cfg.model_package.private = True
-    if cli_args.archive_format:
-        cfg.model_package.archive_format = cli_args.archive_format
+    ensure_stage_dir(output_root)
+    snapshot_config(cfg, output_root / "resolved_config.json")
 
     args: ModelPackageConfig = cfg.model_package
     if not args.manifest:
-        raise ValueError("Model packaging requires --manifest pointing to model_validation_manifest.json")
-
-    run_context = create_run_context(cfg, run_id=cfg.run.run_id)
-    output_root = (
-        ensure_stage_dir(Path(args.output_root).resolve())
-        if args.output_root
-        else ensure_stage_dir(run_context.package_dir)
-    )
-    snapshot_config(cfg, output_root / "resolved_config.json")
+        raise ValueError("Model packaging requires model_package.manifest pointing to model_validation_manifest.json")
 
     model_validation_path = Path(args.manifest).resolve()
     model_validation = read_manifest(model_validation_path, ModelValidationManifest)
@@ -110,7 +75,7 @@ def main(argv: list[str] | None = None) -> None:
 
     quant_manifest = read_manifest(model_validation.quant_manifest, QuantManifest)
     bundle_root = ensure_stage_dir(output_root / args.package_name)
-    included_artifacts: list[str] =[]
+    included_artifacts: list[str] = []
 
     for artifact in model_validation.validated_artifacts:
         tflite_path = artifact.get("tflite_path")

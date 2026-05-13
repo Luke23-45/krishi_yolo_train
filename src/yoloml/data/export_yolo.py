@@ -16,15 +16,13 @@ from yoloml.pipeline import DataManifest, load_cli_config, parse_stage_args, rea
 def main(argv: list[str] | None = None) -> None:
     cli_args, overrides = parse_stage_args("Export a canonical dataset to YOLO format", argv=argv)
     cfg = load_cli_config(overrides=overrides)
-    args: ExportConfig = cfg.export
+    args: ExportConfig = cfg.export_yolo
 
-    if cli_args.manifest:
-        args.manifest = cli_args.manifest
     if cli_args.output_root:
         args.output = cli_args.output_root
 
-    if args.manifest:
-        manifest = read_manifest(args.manifest, DataManifest)
+    if cli_args.manifest:
+        manifest = read_manifest(cli_args.manifest, DataManifest)
         input_path = Path(manifest.canonical_root).resolve()
         output_path = Path(args.output).resolve() if args.output else Path(manifest.yolo_root).resolve()
     else:

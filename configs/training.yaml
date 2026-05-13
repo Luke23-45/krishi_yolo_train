@@ -1,0 +1,318 @@
+# =============================================================================
+# Krishi Vaidya — Training Configuration
+# =============================================================================
+# Comprehensive, self-contained configuration for the YOLOv8 training stage.
+# This is the single source of truth for all training parameters.
+#
+# Usage:
+#   python -m yoloml.training.train
+#   python -m yoloml.training.train training.epochs=200 training.batch=32
+#   python -m yoloml.training.train training.dry_run=true
+#
+# All parameters can be overridden via Hydra syntax:
+#   training.<param>=<value>
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# RUN CONFIGURATION — Orchestration and output layout
+# ---------------------------------------------------------------------------
+run:
+  # Unique identifier for this training run. If null, auto-generated from timestamp.
+  run_id: null
+
+  # Root directory for all run outputs (train/val/test artifacts)
+  root_dir: outputs/runs
+
+  # If true, fail immediately on any pipeline stage error
+  fail_fast: true
+
+  # If true, resume from previous run's checkpoint if available
+  resume: false
+
+  # If true, require valid manifest from previous stage before running
+  require_valid_previous_stage: true
+
+
+# ---------------------------------------------------------------------------
+# DATA CONFIGURATION — Dataset and data sources
+# ---------------------------------------------------------------------------
+materialize:
+  # Name of the YOLO-format dataset directory (relative to project root or absolute)
+  yolo_root: krishi_bouncer_dataset
+
+  # Name of the canonical HuggingFace dataset directory
+  canonical_root: hf_dataset
+
+  # HuggingFace repository ID for dataset download
+  hf_repo_id: hellxhell/krishi-bouncer-dataset
+
+  # Local cache directory for downloaded datasets
+  cache_dir: null
+
+  # Force re-download even if dataset exists locally
+  force_download: false
+
+  # If download fails, allow fallback to local dataset if available
+  allow_fallback: true
+
+  # Override: use local dataset path instead of downloading
+  local_path: null
+
+
+# ---------------------------------------------------------------------------
+# TELEMETRY — Experiment tracking (WandB)
+# ---------------------------------------------------------------------------
+telemetry:
+  # WandB project name
+  project: krishi-vaidya
+
+  # Custom name for this training run (visible in WandB UI)
+  run_name: null
+
+  # Enable WandB logging
+  enable_wandb: true
+
+  # WandB mode: online, offline, or disabled
+  mode: offline
+
+
+# ---------------------------------------------------------------------------
+# TRAINING CONFIGURATION — YOLOv8 hyperparameters
+# ---------------------------------------------------------------------------
+training:
+  # ------------------------------------------------------------------------
+  # MODEL SELECTION
+  # ------------------------------------------------------------------------
+  # Path to YOLOv8 model weights or model variant (n/s/m/l/x)
+  # Options: yolov8n.pt, yolov8s.pt, yolov8m.pt, yolov8l.pt, yolov8x.pt, or custom path
+  model: yolov8n.pt
+
+  # Path to custom model weights (if model is a path to .pt file)
+  # If null, use the pretrained model specified above
+  weights: null
+
+
+  # ------------------------------------------------------------------------
+  # TRAINING HYPERPARAMETERS
+  # ------------------------------------------------------------------------
+  # Number of training epochs
+  epochs: 100
+
+  # Batch size (increase for GPU memory optimization)
+  # Options: 8, 16, 32, 64, 128 (depending on GPU memory)
+  batch: 16
+
+  # Input image size (resolution)
+  # Options: 320, 416, 512, 640, 768, 1024
+  # Higher = better accuracy but slower training
+  imgsz: 640
+
+  # Early stopping patience (epochs without improvement before auto-stop)
+  patience: 50
+
+  # Device for training
+  # Options: auto (auto-detect), 0 (GPU 0), mps (Apple Silicon), cpu
+  device: auto
+
+  # Experiment name (subdirectory in project/run_dir)
+  # If null, auto-generated from timestamp
+  name: null
+
+
+  # ------------------------------------------------------------------------
+  # DATA CONFIGURATION
+  # ------------------------------------------------------------------------
+  # Path to data.yaml file (dataset configuration with train/val/test paths and class names)
+  # If null, will be resolved from dataset config or data manifest
+  data: null
+
+  # Path to DataManifest.json from a previous pipeline stage (data preparation)
+  # When set, training reads verified data.yaml from this manifest instead of resolving automatically
+  manifest: null
+
+
+  # ------------------------------------------------------------------------
+  # CLASS IMBALANCE MITIGATION
+  # ------------------------------------------------------------------------
+  # Enable Offline Repeat Factor Sampling (RFS) for class imbalance
+  # See: Gupta et al., "LVIS", CVPR 2019
+  # When enabled, underrepresented classes get higher sampling frequency
+  balance: false
+
+  # RFS frequency threshold for auto-calculation
+  # If null, auto-computed as median class frequency
+  # Lower = more aggressive upsampling of rare classes
+  rfs_threshold: null
+
+  # Beta parameter for effective number calculation in class-balanced loss
+  # See: Cui et al., "Class-Balanced Loss", CVPR 2019
+  # Range: 0.0 to 1.0. Higher = less aggressive rebalancing
+  beta: 0.9999
+
+  # Disable class-balanced loss weighting (for debugging or baseline comparison)
+  no_class_weights: false
+
+
+  # ------------------------------------------------------------------------
+  # OPTIMIZATION
+  # ------------------------------------------------------------------------
+  # Optimizer choice
+  # Options: auto, SGD, Adam, AdamW (auto lets Ultralytics dynamically pick based on dataset scale)
+  optimizer: auto
+
+  # Initial learning rate
+  lr0: 0.01
+
+  # Final learning rate (cosine annealing final LR)
+  lrf: 0.01
+
+  # Momentum
+  momentum: 0.937
+
+  # Weight decay
+  weight_decay: 0.0005
+
+  # Warmup epochs
+  warmup_epochs: 3.0
+
+  # Warmup momentum
+  warmup_momentum: 0.8
+
+  # Warmup bias learning rate
+  warmup_bias_lr: 0.1
+
+  # Box loss gain
+  box: 7.5
+
+  # Class loss gain
+  cls: 0.5
+
+  # DFL (Distribution Focal Loss) gain
+  dfl: 1.5
+
+
+  # ------------------------------------------------------------------------
+  # AUGMENTATION
+  # ------------------------------------------------------------------------
+  # Image mosaic augmentation probability
+  mosaic: 1.0
+
+  # Mixup augmentation probability
+  mixup: 0.0
+
+  # Copy-paste augmentation probability
+  copy_paste: 0.0
+
+  # HSV augmentation: hue, saturation, value
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+
+  # Geometric augmentation
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  shear: 0.0
+  perspective: 0.0
+
+  # Flip augmentation
+  flipud: 0.0
+  fliplr: 0.5
+
+  # Auto augmentation (YOLOv8 automatic policy)
+  # Standard YOLOv8 robust augmentations are highly optimized and recommended over manual tuning
+  auto: true
+
+
+  # ------------------------------------------------------------------------
+  # TRAINING LOGIC
+  # ------------------------------------------------------------------------
+  # Close mosaic augmentation in last N epochs (prevents distraction)
+  close_mosaic: 10
+
+  # Resume training from last checkpoint (overrides resume in run config)
+  resume_training: false
+
+  # Fraction of training data to use (0.0 to 1.0)
+  # Useful for quick debugging
+  fraction: 1.0
+
+
+  # ------------------------------------------------------------------------
+  # VALIDATION AND CHECKPOINTING
+  # ------------------------------------------------------------------------
+  # Validation interval (run validation every N epochs)
+  val: 1
+
+  # Save checkpoint every N epochs (0 = only save best and last)
+  save_period: -1
+
+  # Cache images for faster training (requires RAM)
+  # Options: false, true, ram (cache in RAM only)
+  cache: false
+
+  # Image preloading for faster training
+  # Options: false, true
+  rect: false
+
+  # Binary classification mode (single class detection)
+  single_cls: false
+
+
+  # ------------------------------------------------------------------------
+  # OUTPUT CONFIGURATION
+  # ------------------------------------------------------------------------
+  # Working directory for training outputs
+  # If null, defaults to run.root_dir/run_id/train
+  output_root: null
+
+  # Save training plots and visualizations
+  plots: true
+
+  # Save predictions on validation set
+  save_json: false
+
+  # Save training results as CSV
+  save_hybrid: false
+
+
+  # ------------------------------------------------------------------------
+  # DEBUGGING AND DEVELOPMENT
+  # ------------------------------------------------------------------------
+  # Dry run: verify all configs and setup but don't run training
+  dry_run: false
+
+  # Verbose logging
+  verbose: true
+
+  # Seed for reproducibility
+  seed: 0
+
+  # Deterministic training (slower but reproducible)
+  deterministic: false
+
+  # Multi-threaded loading (0 = auto)
+  workers: 8
+
+  # Project-level unique name (for grouping multiple runs)
+  project: null
+
+
+  # ------------------------------------------------------------------------
+  # ADVANCED
+  # ------------------------------------------------------------------------
+  # Overlap mask for segmentation (not applicable for detection)
+  overlap_mask: 0
+
+  # Mask downsampling ratio for segmentation
+  mask_ratio: 4
+
+  # Drop path rate for ViT models
+  drop_path: 0.0
+
+  # Dropout rate for classification head
+  dropout: 0.0
+
+  # Freeze model layers (comma-separated layer indices)
+  # Example: "0,1,2,3" freezes first 4 layers
+  freeze: null

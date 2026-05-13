@@ -1,0 +1,54 @@
+defaults:
+  - training
+  - _self_
+
+run:
+  run_id: null
+  root_dir: outputs/runs
+  fail_fast: true
+  resume: false
+  require_valid_previous_stage: true
+
+telemetry:
+  project: krishi-vaidya
+  run_name: null
+  enable_wandb: true
+  mode: online
+
+materialize:
+  yolo_root: krishi_bouncer_dataset
+  canonical_root: hf_dataset
+  hf_repo_id: hellxhell/krishi-bouncer-dataset
+  cache_dir: null
+  force_download: false
+  allow_fallback: true
+  local_path: null
+
+validate:
+  format: yolo
+  verify_images: false
+  dataset: krishi_bouncer_dataset
+
+export_yolo:
+  input: hf_dataset
+  output: krishi_bouncer_dataset
+
+quantize:
+  levels:
+    - fp32
+    - fp16
+    - int8
+  imgsz: 416
+  model: null
+  data: null
+
+model_validate:
+  require_runtime: true
+
+package:
+  package_name: krishi_bouncer_model_bundle
+  archive_format: zip
+  include_source_weights: true
+  include_reports: true
+  repo_id: null
+  private: false

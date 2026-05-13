@@ -1,5 +1,0 @@
-run_id: null
-root_dir: outputs/runs
-fail_fast: true
-resume: false
-require_valid_previous_stage: true

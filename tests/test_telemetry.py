@@ -24,7 +24,7 @@ def test_load_config_defaults_telemetry_mode_online():
 
 def test_load_config_rejects_invalid_telemetry_mode():
     with pytest.raises(ValueError, match="Invalid telemetry.mode"):
-        load_config(["telemetry.mode=bogus"])
+        load_config(overrides=["telemetry.mode=bogus"])
 
 
 def test_setup_telemetry_disabled_when_enable_wandb_false(monkeypatch: pytest.MonkeyPatch):
@@ -111,10 +111,10 @@ def test_setup_telemetry_import_failure_falls_back_to_disabled_offline(monkeypat
 def test_failure_injection_audit_requires_wandb_key_only_for_online(monkeypatch: pytest.MonkeyPatch):
     _clear_wandb_env(monkeypatch)
 
-    online_cfg = load_config(["telemetry.enable_wandb=true", "telemetry.mode=online"])
-    offline_cfg = load_config(["telemetry.enable_wandb=true", "telemetry.mode=offline"])
-    disabled_cfg = load_config(["telemetry.enable_wandb=true", "telemetry.mode=disabled"])
-    hard_disabled_cfg = load_config(["telemetry.enable_wandb=false", "telemetry.mode=online"])
+    online_cfg = load_config(overrides=["telemetry.enable_wandb=true", "telemetry.mode=online"])
+    offline_cfg = load_config(overrides=["telemetry.enable_wandb=true", "telemetry.mode=offline"])
+    disabled_cfg = load_config(overrides=["telemetry.enable_wandb=true", "telemetry.mode=disabled"])
+    hard_disabled_cfg = load_config(overrides=["telemetry.enable_wandb=false", "telemetry.mode=online"])
 
     online_checks = failure_injection_audit(online_cfg)
     offline_checks = failure_injection_audit(offline_cfg)

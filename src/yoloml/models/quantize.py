@@ -1,7 +1,7 @@
 """
 yoloml/models/quantize.py
----------------------------
-Multi-level TFLite quantization pipeline for Krishi Vaidya.
+-------------------------
+Multi-level TFLite quantization pipeline for YoloML.
 """
 
 from __future__ import annotations
@@ -9,10 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from yoloml.config import QuantizationConfig
 from yoloml.pipeline import (
@@ -20,39 +19,31 @@ from yoloml.pipeline import (
     TrainManifest,
     create_run_context,
     ensure_stage_dir,
-    load_cli_config,
-    parse_stage_args,
     read_manifest,
     snapshot_config,
     write_manifest,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)-28s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("krishi.quantize")
+logger = logging.getLogger("yoloml.quantize")
 
 
 def export_tflite(
     model_path: Path,
     level: str,
-    data_yaml: Optional[Path],
+    data_yaml: Path | None,
     imgsz: int,
     output_dir: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     try:
         from ultralytics import YOLO
-    except ImportError:
-        logger.error("ultralytics not installed. Run: pip install ultralytics")
-        sys.exit(1)
+    except ImportError as exc:
+        raise ImportError("ultralytics not installed. Run: pip install ultralytics") from exc
 
     level_dir = output_dir / level
     level_dir.mkdir(parents=True, exist_ok=True)
 
     model = YOLO(str(model_path))
-    export_kwargs: Dict[str, Any] = {
+    export_kwargs: dict[str, Any] = {
         "format": "tflite",
         "imgsz": imgsz,
         "project": str(output_dir),
@@ -84,19 +75,15 @@ def export_tflite(
         if exported_path.is_file() and exported_path.suffix == ".tflite":
             tflite_path = exported_path
         elif exported_path.is_dir():
-            # Match specific level naming convention used by Ultralytics
             target_suffix = "float16" if level == "fp16" else "int8" if level == "int8" else "float32"
             matches = list(exported_path.rglob(f"*{target_suffix}.tflite"))
             if matches:
                 tflite_path = matches[0]
 
-    # If still not found, search near the original model weights (where Ultralytics actually exports)
     if tflite_path is None:
         target_suffix = "float16" if level == "fp16" else "int8" if level == "int8" else "float32"
-        # Search for exact level match first
         candidates = sorted(model_path.parent.rglob(f"*{target_suffix}.tflite"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not candidates:
-            # Absolute fallback
             candidates = sorted(model_path.parent.rglob("*.tflite"), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             tflite_path = candidates[0]
@@ -126,7 +113,7 @@ def export_tflite(
     return metadata
 
 
-def validate_tflite(tflite_path: Path) -> Dict[str, Any]:
+def validate_tflite(tflite_path: Path) -> dict[str, Any]:
     try:
         import tensorflow as tf
     except ImportError:
@@ -160,7 +147,7 @@ def validate_tflite(tflite_path: Path) -> Dict[str, Any]:
     }
 
 
-def generate_comparison(results: List[Dict[str, Any]], output_dir: Path) -> Optional[Path]:
+def generate_comparison(results: list[dict[str, Any]], output_dir: Path) -> Path | None:
     report = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "levels": []}
     baseline_size = None
     for result in results:
@@ -184,15 +171,15 @@ def generate_comparison(results: List[Dict[str, Any]], output_dir: Path) -> Opti
     return report_path
 
 
-def _resolve_quant_inputs(args: QuantizationConfig) -> tuple[Path, Optional[Path], Optional[Path]]:
-    train_manifest_path: Optional[Path] = None
-    if args.manifest:
-        train_manifest_path = Path(args.manifest).resolve()
-        manifest = read_manifest(train_manifest_path, TrainManifest)
-        if not manifest.valid:
+def _resolve_quant_inputs(args: QuantizationConfig, manifest: str | None) -> tuple[Path, Path | None, Path | None]:
+    train_manifest_path: Path | None = None
+    if manifest:
+        train_manifest_path = Path(manifest).resolve()
+        m = read_manifest(train_manifest_path, TrainManifest)
+        if not m.valid:
             raise RuntimeError(f"Train manifest is not valid: {train_manifest_path}")
-        model_path = Path(manifest.best_weights or manifest.last_weights or "")
-        data_yaml = Path(manifest.verified_data_yaml) if manifest.verified_data_yaml else None
+        model_path = Path(m.best_weights or m.last_weights or "")
+        data_yaml = Path(m.verified_data_yaml) if m.verified_data_yaml else None
         if not model_path.exists():
             raise FileNotFoundError(f"Model weights not found from train manifest: {model_path}")
         return model_path.resolve(), data_yaml.resolve() if data_yaml else None, train_manifest_path
@@ -207,43 +194,18 @@ def _resolve_quant_inputs(args: QuantizationConfig) -> tuple[Path, Optional[Path
 
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args(
-        "Quantize trained YOLO weights to TFLite",
-        argv=argv,
-        extra_arguments=[
-            (("--model",), {"type": str, "default": None}),
-            (("--data",), {"type": str, "default": None}),
-            (("--levels",), {"nargs": "+", "type": str, "default": None}),
-            (("--imgsz",), {"type": int, "default": None}),
-        ],
-    )
-    cfg = load_cli_config(overrides=overrides)
-    if cli_args.run_id:
-        cfg.run.run_id = cli_args.run_id
-    if cli_args.manifest:
-        cfg.quantization.manifest = cli_args.manifest
-    if cli_args.output_root:
-        cfg.quantization.output_root = cli_args.output_root
-    
-    if cli_args.model:
-        cfg.quantization.model = cli_args.model
-    if cli_args.data:
-        cfg.quantization.data = cli_args.data
-    if cli_args.levels is not None:
-        cfg.quantization.levels = cli_args.levels
-    if cli_args.imgsz is not None:
-        cfg.quantization.imgsz = cli_args.imgsz
-
+    cfg = load_config(overrides=argv)
     run_context = create_run_context(cfg, run_id=cfg.run.run_id)
     output_root = (
-        ensure_stage_dir(Path(cfg.quantization.output_root).resolve())
+        Path(cfg.quantization.output_root).resolve()
         if cfg.quantization.output_root
-        else ensure_stage_dir(run_context.quantize_dir)
+        else run_context.quantize_dir
     )
+    ensure_stage_dir(output_root)
     snapshot_config(cfg, output_root / "resolved_config.json")
 
     args: QuantizationConfig = cfg.quantization
-    model_path, data_yaml, train_manifest_path = _resolve_quant_inputs(args)
+    model_path, data_yaml, train_manifest_path = _resolve_quant_inputs(args, args.manifest)
     levels = ["fp32", "fp16", "int8"] if "all" in args.levels else list(args.levels)
     if not levels:
         levels = ["fp32", "fp16", "int8"]

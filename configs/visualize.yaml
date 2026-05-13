@@ -1,0 +1,7 @@
+run:
+  run_id: null
+  root_dir: outputs/runs
+
+visualization:
+  data_yaml: krishi_bouncer_dataset/data.yaml
+  output_dir: outputs/figures

@@ -1,0 +1,9 @@
+run:
+  run_id: null
+  root_dir: outputs/runs
+
+telemetry:
+  project: krishi-vaidya
+  run_name: null
+  enable_wandb: false
+  mode: disabled

@@ -26,6 +26,7 @@ from yoloml.pipeline import (
     write_manifest,
 )
 from yoloml.training import train as train_module
+from yoloml.training import main as train_main
 from yoloml.training.train import train
 
 
@@ -33,8 +34,8 @@ def test_config_schema_and_audit_contracts():
     cfg = load_config()
     assert "run" in cfg.__dict__
     assert "data_package" in cfg.__dict__
-    assert "model_validation" in cfg.__dict__
-    assert "model_package" in cfg.__dict__
+    assert "model_validate" in cfg.__dict__
+    assert "package" in cfg.__dict__
 
     static_report = static_contract_audit(cfg)
     dry_report = dry_run_audit(cfg)
@@ -191,7 +192,7 @@ def test_train_writes_manifest_and_rejects_invalid_data(tmp_path: Path, yolo_dat
     assert manifest.valid is True
     assert manifest.balance_report.endswith("balance_report.json")
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(FileNotFoundError):
         train(
             TrainingConfig(dry_run=True),
             tmp_path / "missing.yaml",
@@ -203,21 +204,24 @@ def test_train_writes_manifest_and_rejects_invalid_data(tmp_path: Path, yolo_dat
 
 
 def test_train_main_accepts_documented_cli_flags(tmp_path: Path, yolo_dataset: Path):
+    run_id = "cli_test"
     output_root = tmp_path / "train_cli"
-    train_module.main([
-        "--data", str((yolo_dataset / "data.yaml").resolve()),
-        "--dry-run",
-        "--epochs", "3",
-        "--batch", "2",
-        "--imgsz", "320",
-        "--output-root", str(output_root),
+    train_main([
+        "run.run_id=" + run_id,
+        "run.root_dir=" + str(output_root),
+        "training.data=" + str((yolo_dataset / "data.yaml").resolve()),
+        "training.epochs=3",
+        "training.batch=2",
+        "training.imgsz=320",
+        "training.dry_run=true",
         "telemetry.mode=disabled",
     ])
 
-    manifest = json.loads((output_root / "train_manifest.json").read_text(encoding="utf-8"))
+    manifest_path = output_root / run_id / "train" / "train_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["valid"] is True
     assert Path(manifest["verified_data_yaml"]).exists()
-    assert manifest["output_root"] == str(output_root.resolve())
+    assert manifest["output_root"] == str((output_root / run_id / "train").resolve())
 
 
 def test_quantize_consumes_train_manifest_and_missing_weights_fail(tmp_path: Path, monkeypatch, yolo_dataset: Path):
@@ -339,7 +343,7 @@ def test_model_package_publish_result_is_recorded(tmp_path: Path, monkeypatch):
             assert Path(folder_path).exists()
             assert repo_id == "hellxhell/krishi-bouncer-model"
             assert repo_type == "model"
-            return "commit123"
+            return types.SimpleNamespace(oid="commit123")
 
     fake_hf_module = types.SimpleNamespace(HfApi=FakeHfApi)
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hf_module)
@@ -347,7 +351,7 @@ def test_model_package_publish_result_is_recorded(tmp_path: Path, monkeypatch):
     model_package_module.main([
         "--manifest", str(validation_manifest_path),
         "--output-root", str(tmp_path / "package"),
-        "model_package.repo_id=hellxhell/krishi-bouncer-model",
+        "package.repo_id=hellxhell/krishi-bouncer-model",
     ])
     package_manifest = json.loads((tmp_path / "package" / "package_manifest.json").read_text(encoding="utf-8"))
     assert package_manifest["publish_result"]["repo_id"] == "hellxhell/krishi-bouncer-model"
@@ -547,12 +551,12 @@ def test_launch_full_smoke(tmp_path: Path, monkeypatch):
     launch_main([
         "--mode", "full",
         "--run-id", "smoke",
-        "dataset.canonical_root=" + str((tmp_path / "hf_dataset").resolve()),
-        "dataset.yolo_root=" + str((tmp_path / "krishi_bouncer_dataset").resolve()),
+        "materialize.canonical_root=" + str((tmp_path / "hf_dataset").resolve()),
+        "materialize.yolo_root=" + str((tmp_path / "krishi_bouncer_dataset").resolve()),
         "run.root_dir=" + str((tmp_path / "outputs" / "runs").resolve()),
     ])
 
-    run_context = create_run_context(load_config([
+    run_context = create_run_context(load_config(overrides=[
         "run.run_id=smoke",
         "run.root_dir=" + str((tmp_path / "outputs" / "runs").resolve()),
     ]), run_id="smoke")
@@ -564,7 +568,7 @@ def test_launch_full_smoke(tmp_path: Path, monkeypatch):
 
 
 def test_launch_resume_reuses_valid_manifests(tmp_path: Path, monkeypatch):
-    cfg = load_config([
+    cfg = load_config(overrides=[
         "run.run_id=resume_smoke",
         "run.root_dir=" + str((tmp_path / "outputs" / "runs").resolve()),
         "run.resume=true",
@@ -695,7 +699,7 @@ def test_train_uses_output_root_for_ultralytics_artifacts(tmp_path: Path, yolo_d
     manifest = train(
         TrainingConfig(dry_run=False, no_class_weights=True),
         yolo_dataset / "data.yaml",
-        telemetry_cfg=load_config(["telemetry.mode=disabled"]).telemetry,
+        telemetry_cfg=load_config(overrides=["telemetry.mode=disabled"]).telemetry,
         output_root=output_root,
         training_config_snapshot=snapshot,
         run_id="artifact_test",

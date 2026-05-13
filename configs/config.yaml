@@ -1,13 +1,121 @@
-defaults:
-  - run: default
-  - dataset: default
-  - telemetry: default
-  - training: default
-  - quantization: default
-  - validation: default
-  - export: default
-  - visualization: default
-  - data_package: default
-  - model_validation: default
-  - model_package: default
-  - _self_
+# =============================================================================
+# Krishi Vaidya — YoloML Configuration
+# =============================================================================
+# Single-source-of-truth configuration for the Krishi Vaidya ML pipeline.
+# All stages read from this file. Override any value via Hydra CLI:
+#   python -m yoloml.launch training.epochs=200 training.batch=32
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# RUN — Orchestration and output layout
+# ---------------------------------------------------------------------------
+run:
+  run_id: null
+  root_dir: outputs/runs
+  fail_fast: true
+  resume: false
+  require_valid_previous_stage: true
+
+# ---------------------------------------------------------------------------
+# DATASET — Data provisioning and source locations
+# ---------------------------------------------------------------------------
+materialize:
+  yolo_root: krishi_bouncer_dataset
+  canonical_root: hf_dataset
+  hf_repo_id: hellxhell/krishi-bouncer-dataset
+  cache_dir: null
+  force_download: false
+  allow_fallback: true
+  local_path: null
+
+# ---------------------------------------------------------------------------
+# TELEMETRY — Experiment tracking (W&B)
+# ---------------------------------------------------------------------------
+telemetry:
+  project: krishi-vaidya
+  run_name: null
+  enable_wandb: true
+  mode: online
+
+# ---------------------------------------------------------------------------
+# TRAINING — YOLOv8 training hyperparameters
+# ---------------------------------------------------------------------------
+training:
+  model: yolov8n.pt
+  epochs: 100
+  batch: 16
+  imgsz: 640
+  patience: 15
+  device: auto
+  name: null
+  balance: false
+  rfs_threshold: null
+  beta: 0.9999
+  no_class_weights: false
+  dry_run: false
+  data: null
+
+# ---------------------------------------------------------------------------
+# QUANTIZATION — TFLite export levels and settings
+# ---------------------------------------------------------------------------
+quantize:
+  levels:
+    - fp32
+    - fp16
+    - int8
+  imgsz: 416
+  model: null
+  data: null
+
+# ---------------------------------------------------------------------------
+# VALIDATION — Dataset validation settings
+# ---------------------------------------------------------------------------
+validate:
+  format: yolo
+  verify_images: false
+  dataset: krishi_bouncer_dataset
+
+# ---------------------------------------------------------------------------
+# EXPORT — Canonical-to-YOLO export
+# ---------------------------------------------------------------------------
+export_yolo:
+  input: hf_dataset
+  output: krishi_bouncer_dataset
+
+# ---------------------------------------------------------------------------
+# VISUALIZATION — Figure generation settings
+# ---------------------------------------------------------------------------
+visualization:
+  data_yaml: krishi_bouncer_dataset/data.yaml
+  output_dir: outputs/figures
+
+# ---------------------------------------------------------------------------
+# DATA PACKAGE — Dataset packaging and upload
+# ---------------------------------------------------------------------------
+data_package:
+  input: hf_dataset
+  repo_id: null
+  private: false
+  upload_strategy: large-folder
+  publish_format: webdataset
+  publish_output: null
+  shard_size_mb: 1024
+  archive_format: null
+  archive_output: null
+
+# ---------------------------------------------------------------------------
+# MODEL VALIDATION — TFLite artifact validation
+# ---------------------------------------------------------------------------
+model_validate:
+  require_runtime: true
+
+# ---------------------------------------------------------------------------
+# MODEL PACKAGE — Model bundling and publishing
+# ---------------------------------------------------------------------------
+package:
+  package_name: krishi_bouncer_model_bundle
+  archive_format: zip
+  include_source_weights: true
+  include_reports: true
+  repo_id: null
+  private: false

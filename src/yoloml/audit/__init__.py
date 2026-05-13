@@ -202,11 +202,9 @@ def failure_injection_audit(cfg: YoloMLConfig) -> dict:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run launch readiness audits")
-    parser.add_argument("--run-id", type=str, default="audit")
-    args, overrides = parser.parse_known_args(argv)
-    cfg = load_config(overrides=overrides)
-    cfg.run.run_id = args.run_id
+    cfg = load_config(overrides=argv)
+    if not cfg.run.run_id:
+        cfg.run.run_id = "audit"
 
     report = {
         "static_contract_audit": static_contract_audit(cfg),

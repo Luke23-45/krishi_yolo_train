@@ -1,7 +1,7 @@
 """
 yoloml/utils/visualize.py
----------------------------
-Publication-quality dataset analysis and visualization for Krishi Vaidya.
+-------------------------
+Publication-quality dataset analysis and visualization for YoloML.
 
 Generates presentation-ready figures analyzing class distribution,
 imbalance severity, and the theoretical basis for the rebalancing strategy.
@@ -20,37 +20,25 @@ References:
 
 from __future__ import annotations
 
-import json
 import logging
 import math
-import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple
-
-import hydra
-from yoloml.config import setup_config, YoloMLConfig, VisualizationConfig
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from matplotlib.colors import LinearSegmentedColormap, LogNorm
 import numpy as np
 import yaml
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)-28s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("krishi.visualize")
+from yoloml.config import VisualizationConfig, setup_config
+
+logger = logging.getLogger("yoloml.visualize")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# VISUAL IDENTITY
-# ═══════════════════════════════════════════════════════════════════════════════
 
 BG = "#0D1117"
 SURFACE = "#161B22"
@@ -111,27 +99,19 @@ def _apply_theme() -> None:
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DATA SCANNING
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def scan_yolo_dataset(
     data_yaml_path: Path,
-) -> Tuple[Dict[int, str], Dict[str, Counter], int]:
-    """
-    Scan a YOLO dataset and return class names, per-split class counts,
-    and total image count.
-    """
-    with open(data_yaml_path, "r", encoding="utf-8") as fh:
+) -> tuple[dict[int, str], dict[str, Counter], int]:
+    with open(data_yaml_path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 
     dataset_root = data_yaml_path.parent
     if isinstance(cfg["names"], list):
-        names = {i: n for i, n in enumerate(cfg["names"])}
+        names = dict(enumerate(cfg["names"]))
     else:
         names = {int(k): v for k, v in cfg["names"].items()}
 
-    split_counts: Dict[str, Counter] = {}
+    split_counts: dict[str, Counter] = {}
     total_images = 0
 
     for split in ("train", "val"):
@@ -161,16 +141,12 @@ def scan_yolo_dataset(
     return names, split_counts, total_images
 
 
-def _total_counts(split_counts: Dict[str, Counter]) -> Counter:
+def _total_counts(split_counts: dict[str, Counter]) -> Counter:
     total: Counter = Counter()
     for counts in split_counts.values():
         total += counts
     return total
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MATH HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def effective_number(n: float, beta: float) -> float:
     if beta < 1e-12:
@@ -180,7 +156,7 @@ def effective_number(n: float, beta: float) -> float:
     return (1.0 - beta ** n) / (1.0 - beta)
 
 
-def compute_class_weights(counts: Dict[int, int], beta: float = 0.9999) -> Dict[int, float]:
+def compute_class_weights(counts: dict[int, int], beta: float = 0.9999) -> dict[int, float]:
     eff = {c: effective_number(n, beta) for c, n in counts.items()}
     inv = {c: 1.0 / max(e, 1e-12) for c, e in eff.items()}
     total = sum(inv.values())
@@ -189,11 +165,10 @@ def compute_class_weights(counts: Dict[int, int], beta: float = 0.9999) -> Dict[
 
 
 def compute_rfs_factors(
-    counts: Dict[int, int],
+    counts: dict[int, int],
     total_images: int,
     threshold: float | None = None,
-) -> Dict[int, float]:
-    """Compute per-class repeat factors using the LVIS RFS formula."""
+) -> dict[int, float]:
     freqs = {c: n / max(total_images, 1) for c, n in counts.items()}
     if threshold is None:
         sorted_f = sorted(freqs.values())
@@ -204,12 +179,8 @@ def compute_rfs_factors(
     return factors
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 1: CLASS DISTRIBUTION
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def plot_class_distribution(
-    names: Dict[int, str],
+    names: dict[int, str],
     counts: Counter,
     output_dir: Path,
 ) -> None:
@@ -236,7 +207,7 @@ def plot_class_distribution(
     ax.grid(axis="x", alpha=0.2)
     ax.set_axisbelow(True)
 
-    for i, (bar, val) in enumerate(zip(bars, values)):
+    for i, (_bar, val) in enumerate(zip(bars, values)):
         pct = (val / total) * 100 if total > 0 else 0
         ax.text(
             val * 1.15, i, f" {val:,.0f}  ({pct:.1f}%)",
@@ -245,12 +216,12 @@ def plot_class_distribution(
 
     ax.set_xlabel("Instance Count (log scale)")
     ax.set_title(
-        "Class Distribution — Krishi Vaidya 11-Class Dataset",
+        "Class Distribution",
         pad=16, fontsize=15, fontweight="bold",
     )
     ax.text(
         0.5, 1.02,
-        f"{total:,.0f} total instances  ·  Imbalance ratio: {values.max():.0f} : {max(values.min(), 1):.0f}",
+        f"{total:,.0f} total instances  -  Imbalance ratio: {values.max():.0f} : {max(values.min(), 1):.0f}",
         transform=ax.transAxes, ha="center", fontsize=10, color=TEXT_MUTED,
     )
 
@@ -258,12 +229,8 @@ def plot_class_distribution(
     _save(fig, output_dir / "01_class_distribution")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 2: IMBALANCE RATIO MATRIX
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def plot_imbalance_matrix(
-    names: Dict[int, str],
+    names: dict[int, str],
     counts: Counter,
     output_dir: Path,
 ) -> None:
@@ -288,7 +255,7 @@ def plot_imbalance_matrix(
     for i in range(n):
         for j in range(n):
             r = ratio_matrix[i, j]
-            txt = f"{r:.0f}×" if r >= 10 else f"{r:.1f}×"
+            txt = f"{r:.0f}x" if r >= 10 else f"{r:.1f}x"
             if i == j:
                 txt = "1:1"
             text_col = "#0D1117" if 0.3 < norm(r) < 0.7 else TEXT
@@ -304,7 +271,7 @@ def plot_imbalance_matrix(
     ax.tick_params(length=0)
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.82, pad=0.02)
-    cbar.set_label("Count Ratio (row ÷ column)", fontsize=10, color=TEXT_MUTED)
+    cbar.set_label("Count Ratio (row / column)", fontsize=10, color=TEXT_MUTED)
     cbar.ax.tick_params(colors=TEXT_MUTED, labelsize=9)
 
     ax.set_title(
@@ -316,13 +283,9 @@ def plot_imbalance_matrix(
     _save(fig, output_dir / "02_imbalance_matrix")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 3: TRAIN / VAL SPLIT
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def plot_train_val_split(
-    names: Dict[int, str],
-    split_counts: Dict[str, Counter],
+    names: dict[int, str],
+    split_counts: dict[str, Counter],
     output_dir: Path,
 ) -> None:
     sorted_ids = sorted(names.keys())
@@ -341,11 +304,11 @@ def plot_train_val_split(
 
     fig, ax = plt.subplots(figsize=(13, 6))
 
-    bars_train = ax.bar(
+    ax.bar(
         x - width / 2, train_pct, width, label=f"Train ({train_total:,.0f})",
         color=TRAIN_COLOR, edgecolor=BORDER, linewidth=0.5, alpha=0.88,
     )
-    bars_val = ax.bar(
+    ax.bar(
         x + width / 2, val_pct, width, label=f"Val ({val_total:,.0f})",
         color=VAL_COLOR, edgecolor=BORDER, linewidth=0.5, alpha=0.88,
     )
@@ -370,12 +333,8 @@ def plot_train_val_split(
     _save(fig, output_dir / "03_train_val_split")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 4: EFFECTIVE NUMBER OF SAMPLES
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def plot_effective_number(
-    names: Dict[int, str],
+    names: dict[int, str],
     counts: Counter,
     output_dir: Path,
 ) -> None:
@@ -390,7 +349,7 @@ def plot_effective_number(
             n_range, e_vals, color=BETA_COLORS[beta],
             linewidth=2 if beta == 0.9999 else 1.2,
             alpha=1.0 if beta == 0.9999 else 0.55,
-            label=f"β = {beta}",
+            label=f"beta = {beta}",
             zorder=3 if beta == 0.9999 else 2,
         )
 
@@ -402,19 +361,17 @@ def plot_effective_number(
             n, e, "o", color="#FF7B72", markersize=6,
             markeredgecolor=TEXT, markeredgewidth=0.8, zorder=5,
         )
-        offset_x = 1.3
-        offset_y = 0.85 if counts[c] > 1000 else 1.2
         ax.annotate(
             names[c], (n, e),
             textcoords="offset points", xytext=(8, 4),
             fontsize=7.5, color=TEXT_MUTED,
-            arrowprops=dict(arrowstyle="-", color=GRID, lw=0.5),
+            arrowprops={"arrowstyle": "-", "color": GRID, "lw": 0.5},
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Number of Samples (n)")
-    ax.set_ylabel("Effective Number of Samples  Eₙ")
+    ax.set_ylabel("Effective Number of Samples  E_n")
     ax.grid(True, which="both", alpha=0.15)
     ax.set_axisbelow(True)
     ax.legend(
@@ -423,12 +380,12 @@ def plot_effective_number(
         title_fontsize=9,
     )
     ax.set_title(
-        "Effective Number of Samples — Diminishing Returns of Data",
+        "Effective Number of Samples - Diminishing Returns of Data",
         pad=16, fontsize=15, fontweight="bold",
     )
     ax.text(
         0.5, 1.02,
-        "Each additional sample contributes less as class size grows  ·  β = 0.9999 (recommended)",
+        "Each additional sample contributes less as class size grows  -  beta = 0.9999 (recommended)",
         transform=ax.transAxes, ha="center", fontsize=10, color=TEXT_MUTED,
     )
 
@@ -436,12 +393,8 @@ def plot_effective_number(
     _save(fig, output_dir / "04_effective_number")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIGURE 5: REBALANCING PREVIEW
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def plot_rebalancing_preview(
-    names: Dict[int, str],
+    names: dict[int, str],
     counts: Counter,
     total_images: int,
     output_dir: Path,
@@ -470,10 +423,10 @@ def plot_rebalancing_preview(
         color=ACCENT, edgecolor=BORDER, linewidth=0.5, alpha=0.88,
     )
 
-    for i, (orig, bal, f) in enumerate(zip(original, balanced, factors)):
+    for i, (_orig, bal, f) in enumerate(zip(original, balanced, factors)):
         if f > 1.01:
             ax1.text(
-                bal * 1.08, i - height / 2, f"×{f:.1f}",
+                bal * 1.08, i - height / 2, f"x{f:.1f}",
                 va="center", fontsize=8, color="#3FB950", fontweight="bold",
             )
 
@@ -506,19 +459,15 @@ def plot_rebalancing_preview(
     ax2.set_xlabel("Class-Balanced Loss Weight")
     ax2.grid(axis="x", alpha=0.15)
     ax2.set_axisbelow(True)
-    ax2.set_title("Cui et al. Loss Weights (β=0.9999)", fontsize=13, fontweight="bold", pad=12)
+    ax2.set_title("Cui et al. Loss Weights (beta=0.9999)", fontsize=13, fontweight="bold", pad=12)
 
     fig.suptitle(
-        "Rebalancing Strategy Preview — RFS + Class-Balanced Focal Loss",
+        "Rebalancing Strategy Preview - RFS + Class-Balanced Focal Loss",
         fontsize=16, fontweight="bold", y=1.01,
     )
     fig.tight_layout()
     _save(fig, output_dir / "05_rebalancing_preview")
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# OUTPUT
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def _save(fig: plt.Figure, stem: Path) -> None:
     for ext in ("png", "pdf"):
@@ -528,43 +477,51 @@ def _save(fig: plt.Figure, stem: Path) -> None:
     plt.close(fig)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
+def main(argv: list[str] | None = None) -> None:
+    setup_config()
 
-setup_config()
+    try:
+        import hydra
+        from omegaconf import DictConfig
+    except ImportError as exc:
+        raise ImportError("hydra-core is required for visualization. Run: pip install hydra-core") from exc
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def main(cfg: YoloMLConfig) -> None:
-    args: VisualizationConfig = cfg.visualization
+    @hydra.main(version_base=None, config_path="../../../configs", config_name="visualize")
+    def _run(cfg: DictConfig) -> None:
+        args: VisualizationConfig = VisualizationConfig(
+            data_yaml=cfg.visualization.data_yaml,
+            output_dir=cfg.visualization.output_dir,
+        )
 
-    data_yaml = Path(args.data_yaml).resolve()
-    if not data_yaml.exists():
-        logger.error("data.yaml not found: %s", data_yaml)
-        sys.exit(1)
+        data_yaml = Path(args.data_yaml).resolve()
+        if not data_yaml.exists():
+            raise FileNotFoundError(f"data.yaml not found: {data_yaml}")
 
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "outputs" / "figures").resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(args.output_dir).resolve() if args.output_dir else (PROJECT_ROOT / "outputs" / "figures").resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    _apply_theme()
+        _apply_theme()
 
-    logger.info("Scanning dataset: %s", data_yaml)
-    names, split_counts, total_images = scan_yolo_dataset(data_yaml)
-    total = _total_counts(split_counts)
+        logger.info("Scanning dataset: %s", data_yaml)
+        names, split_counts, total_images = scan_yolo_dataset(data_yaml)
+        total = _total_counts(split_counts)
 
-    logger.info("Classes: %d  |  Total images: %d  |  Total instances: %d",
-                len(names), total_images, sum(total.values()))
-    for cid in sorted(names.keys()):
-        logger.info("  %2d | %-20s | %7d", cid, names[cid], total.get(cid, 0))
+        logger.info("Classes: %d  |  Total images: %d  |  Total instances: %d",
+                    len(names), total_images, sum(total.values()))
+        for cid in sorted(names.keys()):
+            logger.info("  %2d | %-20s | %7d", cid, names[cid], total.get(cid, 0))
 
-    logger.info("Generating figures …")
-    plot_class_distribution(names, total, output_dir)
-    plot_imbalance_matrix(names, total, output_dir)
-    plot_train_val_split(names, split_counts, output_dir)
-    plot_effective_number(names, total, output_dir)
-    plot_rebalancing_preview(names, total, total_images, output_dir)
+        logger.info("Generating figures...")
+        plot_class_distribution(names, total, output_dir)
+        plot_imbalance_matrix(names, total, output_dir)
+        plot_train_val_split(names, split_counts, output_dir)
+        plot_effective_number(names, total, output_dir)
+        plot_rebalancing_preview(names, total, total_images, output_dir)
 
-    logger.info("All %d figures saved to: %s", 5, output_dir)
+        logger.info("All %d figures saved to: %s", 5, output_dir)
+
+    _run()
+
 
 if __name__ == "__main__":
     main()

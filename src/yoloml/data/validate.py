@@ -337,19 +337,14 @@ def _resolve_dataset_from_manifest(manifest_path: str, dataset_format: str) -> P
 def main(argv: list[str] | None = None) -> None:
     cli_args, overrides = parse_stage_args("Validate a canonical or YOLO dataset", argv=argv)
     cfg = load_cli_config(overrides=overrides)
-    args: ValidationConfig = cfg.validation
-
-    if cli_args.output_root:
-        args.output_root = cli_args.output_root
-    if cli_args.manifest:
-        args.manifest = cli_args.manifest
+    args: ValidationConfig = cfg.validate
 
     dataset_dir = (
-        _resolve_dataset_from_manifest(args.manifest, args.format)
-        if args.manifest
+        _resolve_dataset_from_manifest(cli_args.manifest, args.format)
+        if cli_args.manifest
         else Path(args.dataset).resolve()
     )
-    report_path = Path(args.output_root).resolve() / f"{args.format}_validation_report.json" if args.output_root else None
+    report_path = Path(cli_args.output_root).resolve() / f"{args.format}_validation_report.json" if cli_args.output_root else None
     if args.format == "canonical":
         validate_canonical(dataset_dir, do_check_images=args.verify_images, report_path=report_path)
     else:
