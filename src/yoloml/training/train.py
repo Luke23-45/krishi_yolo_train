@@ -296,11 +296,13 @@ def train(
 
     with open(data_yaml, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
-    num_classes = int(cfg["nc"])
-    if isinstance(cfg["names"], list):
-        names = dict(enumerate(cfg["names"]))
+        
+    if isinstance(cfg.get("names", []), list):
+        names = dict(enumerate(cfg.get("names", [])))
     else:
-        names = {int(k): v for k, v in cfg["names"].items()}
+        names = {int(k): v for k, v in cfg.get("names", {}).items()}
+        
+    num_classes = int(cfg.get("nc", len(names)))
 
     logger.info("=" * 64)
     logger.info("  YOLOML - Training Pipeline v1.0")
@@ -479,7 +481,6 @@ def train(
         "mixup": args.mixup,
         "copy_paste": args.copy_paste,
         "close_mosaic": args.close_mosaic,
-        "auto": args.auto,
         "fraction": args.fraction,
         "val": args.val,
         "save_period": args.save_period,
