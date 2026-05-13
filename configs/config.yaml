@@ -19,7 +19,7 @@ run:
 # ---------------------------------------------------------------------------
 # DATASET — Data provisioning and source locations
 # ---------------------------------------------------------------------------
-materialize:
+dataset:
   yolo_root: krishi_bouncer_dataset
   canonical_root: hf_dataset
   hf_repo_id: hellxhell/krishi-bouncer-dataset
@@ -58,7 +58,7 @@ training:
 # ---------------------------------------------------------------------------
 # QUANTIZATION — TFLite export levels and settings
 # ---------------------------------------------------------------------------
-quantize:
+quantization:
   levels:
     - fp32
     - fp16
@@ -70,7 +70,7 @@ quantize:
 # ---------------------------------------------------------------------------
 # VALIDATION — Dataset validation settings
 # ---------------------------------------------------------------------------
-validate:
+validation:
   format: yolo
   verify_images: false
   dataset: krishi_bouncer_dataset
@@ -78,7 +78,7 @@ validate:
 # ---------------------------------------------------------------------------
 # EXPORT — Canonical-to-YOLO export
 # ---------------------------------------------------------------------------
-export_yolo:
+export:
   input: hf_dataset
   output: krishi_bouncer_dataset
 
@@ -106,13 +106,13 @@ data_package:
 # ---------------------------------------------------------------------------
 # MODEL VALIDATION — TFLite artifact validation
 # ---------------------------------------------------------------------------
-model_validate:
+model_validation:
   require_runtime: true
 
 # ---------------------------------------------------------------------------
 # MODEL PACKAGE — Model bundling and publishing
 # ---------------------------------------------------------------------------
-package:
+model_package:
   package_name: krishi_bouncer_model_bundle
   archive_format: zip
   include_source_weights: true

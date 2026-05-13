@@ -9,7 +9,7 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
 
 
