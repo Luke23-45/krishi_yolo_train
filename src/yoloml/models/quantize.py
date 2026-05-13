@@ -78,15 +78,29 @@ def export_tflite(
 
     export_time = time.time() - start
     exported_path = Path(str(exported)) if exported else None
-    tflite_path = exported_path if exported_path and exported_path.exists() and exported_path.suffix == ".tflite" else None
+    tflite_path = None
+
+    if exported_path and exported_path.exists():
+        if exported_path.is_file() and exported_path.suffix == ".tflite":
+            tflite_path = exported_path
+        elif exported_path.is_dir():
+            # Match specific level naming convention used by Ultralytics
+            target_suffix = "float16" if level == "fp16" else "int8" if level == "int8" else "float32"
+            matches = list(exported_path.rglob(f"*{target_suffix}.tflite"))
+            if matches:
+                tflite_path = matches[0]
+
+    # If still not found, search near the original model weights (where Ultralytics actually exports)
     if tflite_path is None:
-        candidates = sorted(
-            output_dir.rglob("*.tflite"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
+        target_suffix = "float16" if level == "fp16" else "int8" if level == "int8" else "float32"
+        # Search for exact level match first
+        candidates = sorted(model_path.parent.rglob(f"*{target_suffix}.tflite"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            # Absolute fallback
+            candidates = sorted(model_path.parent.rglob("*.tflite"), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             tflite_path = candidates[0]
+
     if tflite_path is None or not tflite_path.exists():
         return {"level": level, "success": False, "error": "TFLite file not found after export"}
 
@@ -193,7 +207,16 @@ def _resolve_quant_inputs(args: QuantizationConfig) -> tuple[Path, Optional[Path
 
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args("Quantize trained YOLO weights to TFLite", argv=argv)
+    cli_args, overrides = parse_stage_args(
+        "Quantize trained YOLO weights to TFLite",
+        argv=argv,
+        extra_arguments=[
+            (("--model",), {"type": str, "default": None}),
+            (("--data",), {"type": str, "default": None}),
+            (("--levels",), {"nargs": "+", "type": str, "default": None}),
+            (("--imgsz",), {"type": int, "default": None}),
+        ],
+    )
     cfg = load_cli_config(overrides=overrides)
     if cli_args.run_id:
         cfg.run.run_id = cli_args.run_id
@@ -201,6 +224,15 @@ def main(argv: list[str] | None = None) -> None:
         cfg.quantization.manifest = cli_args.manifest
     if cli_args.output_root:
         cfg.quantization.output_root = cli_args.output_root
+    
+    if cli_args.model:
+        cfg.quantization.model = cli_args.model
+    if cli_args.data:
+        cfg.quantization.data = cli_args.data
+    if cli_args.levels is not None:
+        cfg.quantization.levels = cli_args.levels
+    if cli_args.imgsz is not None:
+        cfg.quantization.imgsz = cli_args.imgsz
 
     run_context = create_run_context(cfg, run_id=cfg.run.run_id)
     output_root = (

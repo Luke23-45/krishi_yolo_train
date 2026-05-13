@@ -37,7 +37,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 from yoloml.config import TelemetryConfig, TrainingConfig
@@ -64,6 +64,17 @@ logger = logging.getLogger("krishi.train")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+ 
+ 
+def get_labels_dir(image_dir: Path) -> Path:
+    """Safely replace the last occurrence of 'images' with 'labels' in a path."""
+    parts = list(image_dir.parts)
+    # Iterate backwards to only replace the relevant 'images' folder
+    for i in reversed(range(len(parts))):
+        if parts[i] == "images":
+            parts[i] = "labels"
+            break
+    return Path(*parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -162,6 +173,7 @@ def create_balanced_dataset(
     source_dir: Path,
     output_dir: Path,
     repeat_factors: Dict[str, int],
+    yolo_cfg: Dict[str, Any],
 ) -> Dict[str, int]:
     """
     Create an RFS-balanced copy of the YOLO training set by physically
@@ -173,22 +185,41 @@ def create_balanced_dataset(
     Returns:
         stats dict with original_images, balanced_images, duplicated_images
     """
-    src_images = source_dir / "images" / "train"
-    src_labels = source_dir / "labels" / "train"
-    dst_images = output_dir / "images" / "train"
-    dst_labels = output_dir / "labels" / "train"
+    train_rel = yolo_cfg.get("train", "images/train")
+    if isinstance(train_rel, list):
+        train_rel = train_rel[0]
+
+    src_images = (source_dir / train_rel).resolve()
+    src_labels = get_labels_dir(src_images)
+    dst_images = (output_dir / train_rel).resolve()
+    dst_labels = get_labels_dir(dst_images)
 
     for d in (dst_images, dst_labels):
         d.mkdir(parents=True, exist_ok=True)
 
-    for split in ("val",):
-        for sub in ("images", "labels"):
-            src = source_dir / sub / split
-            dst = output_dir / sub / split
-            if src.exists():
-                if dst.exists():
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+    for split in ("val", "test"):
+        split_rel = yolo_cfg.get(split)
+        if not split_rel:
+            continue
+        if isinstance(split_rel, list):
+            split_rel = split_rel[0]
+
+        src_split_img = (source_dir / split_rel).resolve()
+        if not src_split_img.exists():
+            continue
+
+        dst_split_img = (output_dir / split_rel).resolve()
+        dst_split_lbl = get_labels_dir(dst_split_img)
+
+        if dst_split_img.exists():
+            shutil.rmtree(dst_split_img)
+        shutil.copytree(src_split_img, dst_split_img)
+
+        src_split_lbl = get_labels_dir(src_split_img)
+        if src_split_lbl.exists():
+            if dst_split_lbl.exists():
+                shutil.rmtree(dst_split_lbl)
+            shutil.copytree(src_split_lbl, dst_split_lbl)
 
     def _link_or_copy(src: Path, dst: Path) -> None:
         if dst.exists():
@@ -198,6 +229,13 @@ def create_balanced_dataset(
         except (OSError, NotImplementedError):
             shutil.copy2(src, dst)
 
+    # Build image mapping for case-insensitive lookup
+    available_images = {}
+    if src_images.exists():
+        for img_file in src_images.iterdir():
+            if img_file.is_file() and img_file.suffix.lower() in IMAGE_EXTENSIONS:
+                available_images[img_file.stem] = img_file
+
     duplicated = 0
     total = 0
 
@@ -206,12 +244,7 @@ def create_balanced_dataset(
         if not src_label.exists():
             continue
 
-        src_image = None
-        for ext in IMAGE_EXTENSIONS:
-            candidate = src_images / f"{stem}{ext}"
-            if candidate.exists():
-                src_image = candidate
-                break
+        src_image = available_images.get(stem)
         if src_image is None:
             continue
 
@@ -228,13 +261,10 @@ def create_balanced_dataset(
             duplicated += 1
             total += 1
 
-    src_data_yaml = source_dir / "data.yaml"
-    if src_data_yaml.exists():
-        with open(src_data_yaml, "r", encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh)
-        cfg["path"] = str(output_dir.resolve())
-        with open(output_dir / "data.yaml", "w", encoding="utf-8") as fh:
-            yaml.dump(cfg, fh, default_flow_style=False, allow_unicode=True)
+    cfg = yolo_cfg.copy()
+    cfg["path"] = str(output_dir.resolve())
+    with open(output_dir / "data.yaml", "w", encoding="utf-8") as fh:
+        yaml.dump(cfg, fh, default_flow_style=False, allow_unicode=True)
 
     return {
         "original_images": len(repeat_factors),
@@ -279,37 +309,33 @@ def compute_class_weights(
 
 
 def inject_class_weights(model, weights: List[float]) -> bool:
-    """
-    Inject per-class weights into the model's classification BCE loss.
-
-    This patches the Detect head's BCEWithLogitsLoss with a weighted version.
-    Falls back gracefully if the Ultralytics internal API has changed.
-    """
     try:
         import torch
+        from ultralytics.utils.loss import v8DetectionLoss
 
-        det_head = model.model.model[-1]
         weight_tensor = torch.tensor(weights, dtype=torch.float32)
 
-        if hasattr(det_head, "bce"):
-            det_head.bce = torch.nn.BCEWithLogitsLoss(
-                pos_weight=weight_tensor,
+        # Preserve the original initialization
+        original_init = v8DetectionLoss.__init__
+
+        def patched_init(self, *args, **kwargs):
+            # Pass all arguments to original init safely
+            original_init(self, *args, **kwargs)
+            # Override self.bce with the class-weighted version
+            self.bce = torch.nn.BCEWithLogitsLoss(
+                pos_weight=weight_tensor.to(self.device),
                 reduction="none",
             )
-            logger.info("Injected class-balanced weights into detection loss (Cui et al.).")
-            return True
 
-        logger.warning(
-            "Detection head does not expose 'bce' attribute. "
-            "Class-balanced loss weighting skipped. RFS alone will handle imbalance."
-        )
+        # Apply the patch
+        v8DetectionLoss.__init__ = patched_init
+        
+        logger.info("Injected class-balanced weights via monkey-patching v8DetectionLoss.")
+        return True
+
     except Exception as exc:
-        logger.warning(
-            "Could not inject class-balanced weights — Ultralytics API may have changed: %s. "
-            "RFS alone will handle imbalance.",
-            exc,
-        )
-    return False
+        logger.warning(f"Could not inject class-balanced weights: {exc}")
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -367,7 +393,11 @@ def train(
     logger.info("Balance:     %s", "RFS enabled" if args.balance else "disabled")
     logger.info("Beta:        %s", args.beta)
 
-    label_dir = dataset_dir / "labels" / "train"
+    train_rel = cfg.get("train", "images/train")
+    if isinstance(train_rel, list):
+        train_rel = train_rel[0]
+    
+    label_dir = get_labels_dir((dataset_dir / train_rel).resolve())
     if not label_dir.exists():
         logger.error("Training labels not found: %s", label_dir)
         sys.exit(1)
@@ -398,13 +428,14 @@ def train(
             shutil.rmtree(balanced_dir)
 
         logger.info("Creating balanced dataset at: %s", balanced_dir)
-        stats = create_balanced_dataset(dataset_dir, balanced_dir, repeat_factors)
+        stats = create_balanced_dataset(dataset_dir, balanced_dir, repeat_factors, cfg)
         logger.info(
             "  Original: %d images → Balanced: %d images (+%d duplicates)",
             stats["original_images"], stats["balanced_images"], stats["duplicated_images"],
         )
 
-        balanced_counts, _ = scan_class_distribution(balanced_dir / "labels" / "train")
+        balanced_label_dir = get_labels_dir((balanced_dir / train_rel).resolve())
+        balanced_counts, _ = scan_class_distribution(balanced_label_dir)
         logger.info("  Post-RFS distribution:")
         for cid in sorted(names.keys()):
             orig = class_counts.get(cid, 0)

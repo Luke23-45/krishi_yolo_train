@@ -25,7 +25,13 @@ from yoloml.pipeline import (
 
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args("Validate quantized model artifacts", argv=argv)
+    cli_args, overrides = parse_stage_args(
+        "Validate quantized model artifacts", 
+        argv=argv,
+        extra_arguments=[
+            (("--require-runtime",), {"dest": "require_runtime", "action": "store_true", "help": "Fail validation if TF/TFLite runtime is missing."}),
+        ],
+    )
     cfg = load_cli_config(overrides=overrides)
     if cli_args.run_id:
         cfg.run.run_id = cli_args.run_id
@@ -33,6 +39,10 @@ def main(argv: list[str] | None = None) -> None:
         cfg.model_validation.manifest = cli_args.manifest
     if cli_args.output_root:
         cfg.model_validation.output_root = cli_args.output_root
+        
+    # Map the custom argument to the config
+    if cli_args.require_runtime:
+        cfg.model_validation.require_runtime = True
 
     args: ModelValidationConfig = cfg.model_validation
     if not args.manifest:
@@ -51,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
     if not quant_manifest.valid:
         raise RuntimeError(f"Quantization manifest is not valid: {quant_manifest_path}")
 
-    validated_artifacts = []
+    validated_artifacts =[]
     valid = True
     for level in quant_manifest.levels:
         artifact = {

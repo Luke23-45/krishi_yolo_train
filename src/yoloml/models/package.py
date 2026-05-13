@@ -40,7 +40,7 @@ def _publish_bundle(bundle_root: Path, repo_id: str, private: bool) -> dict[str,
 
     api = HfApi()
     api.create_repo(repo_id=repo_id, private=private, exist_ok=True, repo_type="model")
-    commit = api.upload_folder(
+    commit_info = api.upload_folder(
         folder_path=str(bundle_root),
         repo_id=repo_id,
         repo_type="model",
@@ -51,12 +51,24 @@ def _publish_bundle(bundle_root: Path, repo_id: str, private: bool) -> dict[str,
         "repo_id": repo_id,
         "repo_type": "model",
         "url": f"https://huggingface.co/{repo_id}",
-        "commit": str(commit),
+        # CommitInfo object has an 'oid' attribute containing the exact commit hash
+        "commit": commit_info.oid, 
     }
 
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args("Package validated model artifacts", argv=argv)
+    cli_args, overrides = parse_stage_args(
+        "Package validated model artifacts", 
+        argv=argv,
+        extra_arguments=[
+            (("--package-name",), {"type": str, "default": None}),
+            (("--include-reports",), {"action": "store_true"}),
+            (("--include-source-weights",), {"action": "store_true"}),
+            (("--repo-id",), {"type": str, "default": None}),
+            (("--private",), {"action": "store_true"}),
+            (("--archive-format",), {"type": str, "default": None}),
+        ],
+    )
     cfg = load_cli_config(overrides=overrides)
     if cli_args.run_id:
         cfg.run.run_id = cli_args.run_id
@@ -64,6 +76,20 @@ def main(argv: list[str] | None = None) -> None:
         cfg.model_package.manifest = cli_args.manifest
     if cli_args.output_root:
         cfg.model_package.output_root = cli_args.output_root
+        
+    # Map the custom arguments to the config
+    if cli_args.package_name:
+        cfg.model_package.package_name = cli_args.package_name
+    if cli_args.include_reports:
+        cfg.model_package.include_reports = True
+    if cli_args.include_source_weights:
+        cfg.model_package.include_source_weights = True
+    if cli_args.repo_id:
+        cfg.model_package.repo_id = cli_args.repo_id
+    if cli_args.private:
+        cfg.model_package.private = True
+    if cli_args.archive_format:
+        cfg.model_package.archive_format = cli_args.archive_format
 
     args: ModelPackageConfig = cfg.model_package
     if not args.manifest:
@@ -84,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
 
     quant_manifest = read_manifest(model_validation.quant_manifest, QuantManifest)
     bundle_root = ensure_stage_dir(output_root / args.package_name)
-    included_artifacts: list[str] = []
+    included_artifacts: list[str] =[]
 
     for artifact in model_validation.validated_artifacts:
         tflite_path = artifact.get("tflite_path")
