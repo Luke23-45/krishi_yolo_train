@@ -55,6 +55,9 @@ def export_tflite(
     export_kwargs: Dict[str, Any] = {
         "format": "tflite",
         "imgsz": imgsz,
+        "project": str(output_dir),
+        "name": level,
+        "exist_ok": True,
     }
 
     if level == "fp16":
@@ -77,7 +80,11 @@ def export_tflite(
     exported_path = Path(str(exported)) if exported else None
     tflite_path = exported_path if exported_path and exported_path.exists() and exported_path.suffix == ".tflite" else None
     if tflite_path is None:
-        candidates = sorted(model_path.parent.rglob("*.tflite"), key=lambda path: path.stat().st_mtime, reverse=True)
+        candidates = sorted(
+            output_dir.rglob("*.tflite"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
         if candidates:
             tflite_path = candidates[0]
     if tflite_path is None or not tflite_path.exists():

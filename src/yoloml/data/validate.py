@@ -47,6 +47,24 @@ def _load_curation_summary(dataset_dir: Path) -> Dict:
     return payload.get("curation", {}) or {}
 
 
+def _resolve_yolo_data_root(dataset_dir: Path, cfg: Dict) -> Path:
+    path_value = cfg.get("path")
+    if not path_value:
+        return dataset_dir
+
+    data_root = Path(str(path_value)).expanduser()
+    if data_root.is_absolute():
+        return data_root.resolve()
+    return (dataset_dir / data_root).resolve()
+
+
+def _resolve_yolo_split_path(data_root: Path, split_value: str) -> Path:
+    split_path = Path(str(split_value)).expanduser()
+    if split_path.is_absolute():
+        return split_path.resolve()
+    return (data_root / split_path).resolve()
+
+
 def _check_images_readable(image_paths: List[Path]) -> Dict:
     try:
         from PIL import Image
@@ -186,20 +204,24 @@ def validate_yolo(
 ) -> Path:
     logger.info("Validating YOLO dataset: %s", dataset_dir)
 
+    data_yaml_path = dataset_dir / "data.yaml"
+    if not data_yaml_path.exists():
+        logger.error("Missing required YOLO path: %s", data_yaml_path)
+        sys.exit(1)
+
+    with open(data_yaml_path, "r", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+    data_root = _resolve_yolo_data_root(dataset_dir, cfg)
     required = [
-        dataset_dir / "data.yaml",
-        dataset_dir / "images" / "train",
-        dataset_dir / "images" / "val",
-        dataset_dir / "labels" / "train",
-        dataset_dir / "labels" / "val",
+        _resolve_yolo_split_path(data_root, cfg.get("train", "images/train")),
+        _resolve_yolo_split_path(data_root, cfg.get("val", "images/val")),
+        _resolve_yolo_split_path(data_root, str(cfg.get("train", "images/train")).replace("images", "labels", 1)),
+        _resolve_yolo_split_path(data_root, str(cfg.get("val", "images/val")).replace("images", "labels", 1)),
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         logger.error("Missing required YOLO paths: %s", missing)
         sys.exit(1)
-
-    with open(dataset_dir / "data.yaml", "r", encoding="utf-8") as handle:
-        cfg = yaml.safe_load(handle)
     nc = int(cfg["nc"])
     if isinstance(cfg["names"], list):
         names = {idx: name for idx, name in enumerate(cfg["names"])}
@@ -212,8 +234,12 @@ def validate_yolo(
     split_summary: Dict[str, Dict[str, int]] = {}
 
     for split in ("train", "val"):
-        image_dir = dataset_dir / "images" / split
-        label_dir = dataset_dir / "labels" / split
+        split_images = cfg.get(split, f"images/{split}")
+        image_dir = _resolve_yolo_split_path(data_root, split_images)
+        label_dir = _resolve_yolo_split_path(
+            data_root,
+            str(split_images).replace("images", "labels", 1),
+        )
         image_stems = {
             path.stem for path in image_dir.iterdir()
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS

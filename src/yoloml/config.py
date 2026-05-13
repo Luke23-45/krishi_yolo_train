@@ -38,6 +38,7 @@ class TelemetryConfig:
     project: str = "krishi-vaidya"
     run_name: Optional[str] = None
     enable_wandb: bool = True
+    mode: str = "online"
 
 
 @dataclass
@@ -162,7 +163,17 @@ def load_config(overrides: Optional[list[str]] = None) -> YoloMLConfig:
     with initialize_config_dir(version_base=None, config_dir=str(CONFIG_ROOT)):
         cfg = compose(config_name="config", overrides=overrides or [])
     merged = OmegaConf.merge(OmegaConf.structured(YoloMLConfig()), cfg)
-    return OmegaConf.to_object(merged)
+    resolved = OmegaConf.to_object(merged)
+    _validate_telemetry_config(resolved.telemetry)
+    return resolved
+
+
+def _validate_telemetry_config(cfg: TelemetryConfig) -> None:
+    valid_modes = {"online", "offline", "disabled"}
+    if cfg.mode not in valid_modes:
+        raise ValueError(
+            f"Invalid telemetry.mode '{cfg.mode}'. Expected one of: {', '.join(sorted(valid_modes))}."
+        )
 
 
 def to_config_dict(cfg: YoloMLConfig | Any) -> dict[str, Any]:

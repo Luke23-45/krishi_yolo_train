@@ -120,7 +120,9 @@ def run_data_pipeline(cfg: YoloMLConfig, run_id: str) -> Path:
     snapshot_config(cfg, output_root / "resolved_config.json")
 
     manager = DatasetManager(cfg.dataset)
-    manager.prepare_data(output_root=output_root)
+    prepared = manager.prepare_data(output_root=output_root)
+    canonical_root = Path(prepared.canonical_root).resolve() if prepared.canonical_root else canonical_root
+    yolo_root = Path(prepared.yolo_root).resolve()
 
     if not canonical_root.exists():
         raise FileNotFoundError(

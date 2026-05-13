@@ -30,6 +30,7 @@ def static_contract_audit(cfg: YoloMLConfig) -> dict:
         CONFIG_ROOT / "config.yaml",
         CONFIG_ROOT / "run" / "default.yaml",
         CONFIG_ROOT / "dataset" / "default.yaml",
+        CONFIG_ROOT / "telemetry" / "default.yaml",
         CONFIG_ROOT / "training" / "default.yaml",
         CONFIG_ROOT / "quantization" / "default.yaml",
         CONFIG_ROOT / "validation" / "default.yaml",
@@ -180,7 +181,11 @@ def failure_injection_audit(cfg: YoloMLConfig) -> dict:
     })
     checks.append({
         "name": "missing_wandb_key",
-        "would_fail": cfg.telemetry.enable_wandb and os.environ.get("WANDB_API_KEY") is None,
+        "would_fail": (
+            cfg.telemetry.enable_wandb
+            and cfg.telemetry.mode == "online"
+            and os.environ.get("WANDB_API_KEY") is None
+        ),
     })
     checks.append({
         "name": "runtime_required_for_model_validation",

@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 
 from yoloml.audit import dry_run_audit, static_contract_audit
 from yoloml.config import DatasetProvisioningConfig, TrainingConfig, load_config
@@ -24,6 +25,7 @@ from yoloml.pipeline import (
     create_run_context,
     write_manifest,
 )
+from yoloml.training import train as train_module
 from yoloml.training.train import train
 
 
@@ -141,6 +143,37 @@ def test_dataset_manager_hub_sync_supports_canonical_repo(tmp_path: Path, monkey
     assert (yolo_root / "data.yaml").exists()
 
 
+def test_dataset_manager_accepts_data_yaml_with_explicit_path_root(tmp_path: Path):
+    actual_root = tmp_path / "actual_yolo"
+    config_root = tmp_path / "config_only"
+    for split in ("train", "val"):
+        (actual_root / "images" / split).mkdir(parents=True, exist_ok=True)
+        (actual_root / "labels" / split).mkdir(parents=True, exist_ok=True)
+        (actual_root / "images" / split / f"{split}.jpg").write_bytes(b"img")
+        (actual_root / "labels" / split / f"{split}.txt").write_text("0 0.5 0.5 0.5 0.5\n", encoding="utf-8")
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "data.yaml").write_text(
+        yaml.dump({
+            "path": str(actual_root.resolve()),
+            "train": "images/train",
+            "val": "images/val",
+            "nc": 1,
+            "names": {0: "leaf"},
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    manager = DatasetManager(DatasetProvisioningConfig(
+        yolo_root=str(config_root),
+        canonical_root=str(tmp_path / "missing_canonical"),
+        hf_repo_id="",
+        allow_fallback=False,
+    ))
+    prepared = manager.prepare_data(output_root=tmp_path / "run_explicit_path")
+    assert prepared.source == "local-yolo"
+    assert prepared.data_yaml.exists()
+
+
 def test_train_writes_manifest_and_rejects_invalid_data(tmp_path: Path, yolo_dataset: Path):
     output_root = tmp_path / "train"
     output_root.mkdir()
@@ -167,6 +200,24 @@ def test_train_writes_manifest_and_rejects_invalid_data(tmp_path: Path, yolo_dat
             training_config_snapshot=snapshot,
             run_id="train_test",
         )
+
+
+def test_train_main_accepts_documented_cli_flags(tmp_path: Path, yolo_dataset: Path):
+    output_root = tmp_path / "train_cli"
+    train_module.main([
+        "--data", str((yolo_dataset / "data.yaml").resolve()),
+        "--dry-run",
+        "--epochs", "3",
+        "--batch", "2",
+        "--imgsz", "320",
+        "--output-root", str(output_root),
+        "telemetry.mode=disabled",
+    ])
+
+    manifest = json.loads((output_root / "train_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["valid"] is True
+    assert Path(manifest["verified_data_yaml"]).exists()
+    assert manifest["output_root"] == str(output_root.resolve())
 
 
 def test_quantize_consumes_train_manifest_and_missing_weights_fail(tmp_path: Path, monkeypatch, yolo_dataset: Path):
@@ -364,6 +415,30 @@ def test_export_yolo_honors_output_root_with_manifest(tmp_path: Path, canonical_
 
     assert captured["input"] == canonical_dataset.resolve()
     assert captured["output"] == (tmp_path / "override_yolo").resolve()
+
+
+def test_validate_yolo_honors_data_yaml_path_field(tmp_path: Path):
+    actual_root = tmp_path / "actual_yolo"
+    config_root = tmp_path / "config_only"
+    for split in ("train", "val"):
+        (actual_root / "images" / split).mkdir(parents=True, exist_ok=True)
+        (actual_root / "labels" / split).mkdir(parents=True, exist_ok=True)
+        (actual_root / "images" / split / f"{split}.jpg").write_bytes(b"img")
+        (actual_root / "labels" / split / f"{split}.txt").write_text("0 0.5 0.5 0.5 0.5\n", encoding="utf-8")
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "data.yaml").write_text(
+        yaml.dump({
+            "path": str(actual_root.resolve()),
+            "train": "images/train",
+            "val": "images/val",
+            "nc": 1,
+            "names": {0: "leaf"},
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    report = validate_yolo(config_root, report_path=tmp_path / "reports" / "yolo_explicit_path.json")
+    assert report.exists()
 
 
 def test_launch_full_smoke(tmp_path: Path, monkeypatch):
@@ -564,6 +639,7 @@ def test_launch_resume_reuses_valid_manifests(tmp_path: Path, monkeypatch):
     Path(data_manifest.materialization_report).parent.mkdir(parents=True, exist_ok=True)
     Path(data_manifest.canonical_root).mkdir(parents=True, exist_ok=True)
     Path(data_manifest.yolo_root).mkdir(parents=True, exist_ok=True)
+    Path(data_manifest.materialization_report).write_text("{}", encoding="utf-8")
     Path(data_manifest.canonical_validation_report).write_text("{}", encoding="utf-8")
     Path(data_manifest.yolo_validation_report).write_text("{}", encoding="utf-8")
     Path(train_manifest.verified_data_yaml).parent.mkdir(parents=True, exist_ok=True)
@@ -593,3 +669,36 @@ def test_launch_resume_reuses_valid_manifests(tmp_path: Path, monkeypatch):
         "run.root_dir=" + str((tmp_path / "outputs" / "runs").resolve()),
         "run.resume=true",
     ])
+
+
+def test_train_uses_output_root_for_ultralytics_artifacts(tmp_path: Path, yolo_dataset: Path, monkeypatch):
+    output_root = tmp_path / "train_artifacts"
+    output_root.mkdir()
+    snapshot = output_root / "config.json"
+    snapshot.write_text("{}", encoding="utf-8")
+
+    class FakeYOLO:
+        def __init__(self, model_name):
+            self.model_name = model_name
+            self.model = types.SimpleNamespace(model=[None, types.SimpleNamespace()])
+
+        def train(self, **kwargs):
+            assert kwargs["project"] == str(output_root)
+            assert kwargs["name"] == "artifacts"
+            save_dir = output_root / "artifacts"
+            (save_dir / "weights").mkdir(parents=True, exist_ok=True)
+            (save_dir / "weights" / "best.pt").write_bytes(b"pt")
+            return types.SimpleNamespace(save_dir=str(save_dir))
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+
+    manifest = train(
+        TrainingConfig(dry_run=False, no_class_weights=True),
+        yolo_dataset / "data.yaml",
+        telemetry_cfg=load_config(["telemetry.mode=disabled"]).telemetry,
+        output_root=output_root,
+        training_config_snapshot=snapshot,
+        run_id="artifact_test",
+    )
+    assert manifest.valid is True
+    assert manifest.best_weights == str((output_root / "artifacts" / "weights" / "best.pt").resolve())

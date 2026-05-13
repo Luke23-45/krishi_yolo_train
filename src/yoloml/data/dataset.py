@@ -113,10 +113,11 @@ class DatasetManager:
             with open(yaml_file, "r", encoding="utf-8") as handle:
                 cfg = yaml.safe_load(handle) or {}
 
+            data_root = self._resolve_yolo_data_root(directory, cfg)
             for split in ["train", "val"]:
                 if split not in cfg:
                     return False
-                split_path = directory / cfg[split]
+                split_path = self._resolve_yolo_split_path(data_root, cfg[split])
                 if not split_path.exists():
                     return False
 
@@ -148,6 +149,22 @@ class DatasetManager:
             yaml.dump(cfg, handle, default_flow_style=False, sort_keys=False)
 
         return target
+
+    def _resolve_yolo_data_root(self, directory: Path, cfg: dict) -> Path:
+        path_value = cfg.get("path")
+        if not path_value:
+            return directory
+
+        data_root = Path(path_value).expanduser()
+        if data_root.is_absolute():
+            return data_root.resolve()
+        return (directory / data_root).resolve()
+
+    def _resolve_yolo_split_path(self, data_root: Path, split_value: str) -> Path:
+        split_path = Path(split_value).expanduser()
+        if split_path.is_absolute():
+            return split_path.resolve()
+        return (data_root / split_path).resolve()
 
     def _sync_from_huggingface(self) -> bool:
         try:

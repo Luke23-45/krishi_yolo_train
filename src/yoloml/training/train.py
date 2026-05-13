@@ -478,18 +478,20 @@ def train(
 
     device = resolve_device(args.device)
     experiment_name = telemetry_run_name
+    artifacts_dir = output_root / "artifacts"
 
     logger.info("Device:      %s", device)
     logger.info("Experiment:  %s", experiment_name)
     logger.info("Data YAML:   %s", training_data_yaml)
+    logger.info("Artifacts:   %s", artifacts_dir)
 
     kwargs = {
         "data": str(training_data_yaml),
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
-        "project": str(output_root.parent),
-        "name": experiment_name,
+        "project": str(output_root),
+        "name": "artifacts",
         "device": device,
         "patience": args.patience,
         "exist_ok": True,
@@ -497,7 +499,7 @@ def train(
 
     results = model.train(**kwargs)
 
-    save_dir = Path(getattr(results, "save_dir", getattr(model, "trainer", object()).save_dir if hasattr(getattr(model, "trainer", None), "save_dir") else output_root))
+    save_dir = Path(getattr(results, "save_dir", getattr(model, "trainer", object()).save_dir if hasattr(getattr(model, "trainer", None), "save_dir") else artifacts_dir))
     if not save_dir.is_absolute():
         save_dir = (PROJECT_ROOT / save_dir).resolve()
     best_weights = save_dir / "weights" / "best.pt"
@@ -520,7 +522,25 @@ def train(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main(argv: list[str] | None = None) -> None:
-    cli_args, overrides = parse_stage_args("Run the YOLO training stage", argv=argv)
+    cli_args, overrides = parse_stage_args(
+        "Run the YOLO training stage",
+        argv=argv,
+        extra_arguments=[
+            (("--data",), {"type": str, "default": None}),
+            (("--model",), {"type": str, "default": None}),
+            (("--epochs",), {"type": int, "default": None}),
+            (("--batch",), {"type": int, "default": None}),
+            (("--imgsz",), {"type": int, "default": None}),
+            (("--patience",), {"type": int, "default": None}),
+            (("--device",), {"type": str, "default": None}),
+            (("--name",), {"type": str, "default": None}),
+            (("--rfs-threshold",), {"dest": "rfs_threshold", "type": float, "default": None}),
+            (("--beta",), {"type": float, "default": None}),
+            (("--balance",), {"action": "store_true"}),
+            (("--no-class-weights",), {"dest": "no_class_weights", "action": "store_true"}),
+            (("--dry-run",), {"dest": "dry_run", "action": "store_true"}),
+        ],
+    )
     cfg = load_cli_config(overrides=overrides)
     if cli_args.run_id:
         cfg.run.run_id = cli_args.run_id
@@ -528,6 +548,32 @@ def main(argv: list[str] | None = None) -> None:
         cfg.training.manifest = cli_args.manifest
     if cli_args.output_root:
         cfg.training.output_root = cli_args.output_root
+    if cli_args.data:
+        cfg.training.data = cli_args.data
+    if cli_args.model:
+        cfg.training.model = cli_args.model
+    if cli_args.epochs is not None:
+        cfg.training.epochs = cli_args.epochs
+    if cli_args.batch is not None:
+        cfg.training.batch = cli_args.batch
+    if cli_args.imgsz is not None:
+        cfg.training.imgsz = cli_args.imgsz
+    if cli_args.patience is not None:
+        cfg.training.patience = cli_args.patience
+    if cli_args.device:
+        cfg.training.device = cli_args.device
+    if cli_args.name:
+        cfg.training.name = cli_args.name
+    if cli_args.balance:
+        cfg.training.balance = True
+    if cli_args.rfs_threshold is not None:
+        cfg.training.rfs_threshold = cli_args.rfs_threshold
+    if cli_args.beta is not None:
+        cfg.training.beta = cli_args.beta
+    if cli_args.no_class_weights:
+        cfg.training.no_class_weights = True
+    if cli_args.dry_run:
+        cfg.training.dry_run = True
 
     run_context = create_run_context(cfg, run_id=cfg.run.run_id)
     output_root = (
