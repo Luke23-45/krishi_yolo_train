@@ -101,11 +101,36 @@ def _unpack_webdataset_tars(yolo_root: Path) -> None:
             except Exception as e:
                 logger.warning(f"Failed to unpack {tar_path.name}: {e}")
 
+def _ensure_data_yaml_exists(yolo_root: Path) -> None:
+    data_yaml_path = yolo_root / "data.yaml"
+    if not data_yaml_path.exists():
+        classes_json_path = yolo_root / "classes.json"
+        if classes_json_path.exists():
+            try:
+                import yaml
+                payload = json.loads(classes_json_path.read_text(encoding="utf-8"))
+                names = {int(k): v for k, v in payload["names"].items()}
+                yaml_payload = {
+                    "path": str(yolo_root),
+                    "train": "images/train",
+                    "val": "images/val",
+                    "nc": len(names),
+                    "names": names,
+                }
+                data_yaml_path.write_text(
+                    yaml.dump(yaml_payload, default_flow_style=False, allow_unicode=True),
+                    encoding="utf-8"
+                )
+                logger.info("Auto-generated data.yaml from classes.json.")
+            except Exception as e:
+                logger.warning(f"Failed to generate data.yaml: {e}")
+
 def ensure_dataset_ready(cfg: YoloMLConfig) -> Path:
     dataset_cfg = cfg.dataset
     yolo_root = Path(dataset_cfg.yolo_root).resolve()
 
     if yolo_root.exists() and yolo_root.is_dir():
+        _ensure_data_yaml_exists(yolo_root)
         _unpack_webdataset_tars(yolo_root)
 
     is_valid = False
@@ -137,6 +162,7 @@ def ensure_dataset_ready(cfg: YoloMLConfig) -> Path:
             resume_download=True,
         )
 
+        _ensure_data_yaml_exists(yolo_root)
         if (yolo_root / "data.yaml").exists():
             logger.info("Dataset downloaded. Checking for WebDataset tar archives...")
             _unpack_webdataset_tars(yolo_root)
