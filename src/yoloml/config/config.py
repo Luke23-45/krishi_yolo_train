@@ -77,13 +77,14 @@ class TrainingConfig:
     fraction: float = 1.0
     val: bool = True
     save_period: int = -1
+    save_top_k: int = 3
     cache: bool = False
     rect: bool = False
     single_cls: bool = False
     plots: bool = True
     seed: int = 0
     deterministic: bool = True
-    workers: int = 8
+    workers: int = -1
 
 
 @dataclass

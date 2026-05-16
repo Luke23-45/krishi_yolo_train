@@ -250,8 +250,9 @@ def inject_class_weights(model: Any, weights: list[float]) -> bool:
 
         def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
             original_init(self, *args, **kwargs)
+            device = getattr(self, "device", "cpu")
             self.bce = torch.nn.BCEWithLogitsLoss(
-                pos_weight=weight_tensor.to(self.device),
+                pos_weight=weight_tensor.to(device),
                 reduction="none",
             )
 
@@ -444,6 +445,40 @@ def train(
     if not args.no_class_weights:
         inject_class_weights(model, weights)
 
+    if args.save_top_k > 0:
+        def keep_top_k_models_callback(trainer: Any) -> None:
+            try:
+                k = args.save_top_k
+                if not hasattr(trainer, 'top_k_checkpoints'):
+                    trainer.top_k_checkpoints = []
+                
+                fitness = getattr(trainer, 'fitness', None)
+                if fitness is None:
+                    return
+                    
+                epoch = getattr(trainer, 'epoch', 0)
+                # Robust extraction of save_dir for compatibility across ultralytics versions
+                save_dir = Path(getattr(trainer, "save_dir", getattr(getattr(trainer, "args", object()), "save_dir", "runs/train")))
+                weights_dir = save_dir / 'weights'
+                
+                ckpt_path = weights_dir / f'top_epoch_{epoch}.pt'
+                last_pt = weights_dir / 'last.pt'
+                
+                if last_pt.exists():
+                    shutil.copy2(last_pt, ckpt_path)
+                    trainer.top_k_checkpoints.append({'epoch': epoch, 'fitness': fitness, 'path': ckpt_path})
+                    
+                    trainer.top_k_checkpoints.sort(key=lambda x: x['fitness'], reverse=True)
+                    
+                    while len(trainer.top_k_checkpoints) > k:
+                        removed = trainer.top_k_checkpoints.pop(-1)
+                        if removed['path'].exists():
+                            removed['path'].unlink()
+            except Exception as e:
+                logger.warning("Failed to save top-k checkpoint for epoch %s: %s", getattr(trainer, 'epoch', 'unknown'), e)
+
+        model.add_callback("on_model_save", keep_top_k_models_callback)
+
     device = resolve_device(args.device)
     experiment_name = telemetry_run_name
     artifacts_dir = output_root / "artifacts"
@@ -452,6 +487,8 @@ def train(
     logger.info("Experiment:  %s", experiment_name)
     logger.info("Data YAML:   %s", training_data_yaml)
     logger.info("Artifacts:   %s", artifacts_dir)
+
+    workers_count = args.workers if (args.workers is not None and args.workers > 0) else (os.cpu_count() or 8)
 
     kwargs: dict[str, Any] = {
         "data": str(training_data_yaml),
@@ -490,17 +527,36 @@ def train(
         "plots": args.plots,
         "seed": args.seed,
         "deterministic": args.deterministic,
-        "workers": args.workers,
+        "workers": workers_count,
     }
 
     if args.name:
         kwargs["name"] = args.name
 
-    results = model.train(**kwargs)
+    results = None
+    try:
+        results = model.train(**kwargs)
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user (KeyboardInterrupt). Attempting to save current state.")
+    except Exception as e:
+        if "CUDA out of memory" in str(e):
+            logger.error("CUDA Out of Memory! Try reducing training.batch or training.imgsz in your configuration.")
+        raise
 
-    save_dir = Path(getattr(results, "save_dir", getattr(model, "trainer", object()).save_dir if hasattr(getattr(model, "trainer", None), "save_dir") else artifacts_dir))
+    # Robust extraction of save_dir across different ultralytics versions
+    trainer = getattr(model, "trainer", None)
+    save_dir_attr = getattr(results, "save_dir", None) if results else None
+    
+    if save_dir_attr:
+        save_dir = Path(save_dir_attr)
+    elif trainer and hasattr(trainer, "save_dir"):
+        save_dir = Path(trainer.save_dir)
+    else:
+        save_dir = artifacts_dir
+
     if not save_dir.is_absolute():
         save_dir = (PROJECT_ROOT / save_dir).resolve()
+        
     best_weights = save_dir / "weights" / "best.pt"
     last_weights = save_dir / "weights" / "last.pt"
 
@@ -512,7 +568,16 @@ def train(
     logger.info("TRAINING COMPLETE")
     logger.info("=" * 64)
     logger.info("Results directory: %s", save_dir)
-    logger.info("Best weights:      %s", best_weights)
+    if best_weights.exists():
+        logger.info("Best weights:      %s", best_weights)
+        
+    if trainer and hasattr(trainer, "top_k_checkpoints") and trainer.top_k_checkpoints:
+        logger.info("-" * 64)
+        logger.info("Top %d Models Saved:", len(trainer.top_k_checkpoints))
+        for idx, ckpt in enumerate(trainer.top_k_checkpoints, 1):
+            logger.info("  %d: Epoch %d | Fitness: %.4f | Path: %s", 
+                        idx, ckpt['epoch'], ckpt['fitness'], ckpt['path'].name)
+                        
     return manifest
 
 

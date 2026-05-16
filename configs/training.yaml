@@ -108,7 +108,7 @@ training:
   imgsz: 640
 
   # Early stopping patience (epochs without improvement before auto-stop)
-  patience: 50
+  patience: 15
 
   # Device for training
   # Options: auto (auto-detect), 0 (GPU 0), mps (Apple Silicon), cpu
@@ -247,9 +247,12 @@ training:
   # Save checkpoint every N epochs (0 = only save best and last)
   save_period: -1
 
+  # Save the top K models (based on fitness)
+  save_top_k: 3
+
   # Cache images for faster training (requires RAM)
   # Options: false, true, ram (cache in RAM only)
-  cache: false
+  cache: true
 
   # Image preloading for faster training
   # Options: false, true
@@ -291,8 +294,8 @@ training:
   # Deterministic training (slower but reproducible)
   deterministic: false
 
-  # Multi-threaded loading (0 = auto)
-  workers: 8
+  # Multi-threaded loading (-1 = auto/cpu_count)
+  workers: -1
 
   # Project-level unique name (for grouping multiple runs)
   project: null
