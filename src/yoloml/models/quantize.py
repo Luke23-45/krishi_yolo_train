@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from yoloml.config import QuantizationConfig
+from yoloml.config import QuantizationConfig, load_config
 from yoloml.pipeline import (
     QuantManifest,
     TrainManifest,
@@ -49,6 +49,7 @@ def export_tflite(
         "project": str(output_dir),
         "name": level,
         "exist_ok": True,
+        "simplify": True,  # Standard practice: simplifies ONNX graph before TFLite conversion
     }
 
     if level == "fp16":
@@ -57,8 +58,13 @@ def export_tflite(
         export_kwargs["int8"] = True
         if data_yaml and data_yaml.exists():
             export_kwargs["data"] = str(data_yaml)
+            logger.info("Using dataset '%s' for INT8 calibration.", data_yaml.name)
         else:
-            logger.warning("No data.yaml provided for INT8 calibration.")
+            # Industry Standard: NEVER run INT8 quantization without a calibration dataset. 
+            # It will silently fallback to dummy data resulting in a ruined model (high mAP drop).
+            error_msg = "Strict requirement: INT8 quantization requires a valid data.yaml calibration dataset."
+            logger.error(error_msg)
+            return {"level": level, "success": False, "error": error_msg}
 
     start = time.time()
     try:
@@ -226,4 +232,5 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(sys.argv[1:])

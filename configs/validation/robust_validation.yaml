@@ -1,0 +1,36 @@
+# =============================================================================
+# Krishi Vaidya - Robust Validation Configuration
+# =============================================================================
+# Detailed validation for a trained detector against a YOLO-format
+# validation split. Produces:
+# - summary.json + summary.csv
+# - predictions.csv
+# - errors.csv
+# - per_image_summary.csv
+# - per_class_metrics.csv
+# - confusion_matrix.csv
+# - preview images (optional)
+#
+# Usage:
+#   python -m yoloml.validations.robust_validate --config configs/validation/robust_validation.yaml
+#   python -m yoloml.validations.robust_validate --config configs/validation/robust_validation.yaml --conf 0.30
+# =============================================================================
+
+robust_validation:
+  model: "krishi_yolo_train_outputs/krishi_yolo_train/outputs/runs/20260516_173740/train/artifacts/weights/best.pt"
+
+  data: "krishi_bouncer_dataset/data.yaml"
+
+  images_dir: null
+  labels_dir: null
+
+  split: val
+
+  output_dir: "krishi_yolo_train_outputs/thesis_ready_data/robust_validation"
+
+  imgsz: 640
+  conf: 0.25
+  iou: 0.50
+  device: cpu
+
+  save_images: true

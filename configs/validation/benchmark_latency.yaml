@@ -1,0 +1,9 @@
+# Benchmark latency configuration
+# Output: latency_metrics.json, latency_per_image.csv, latency_summary.csv
+
+model: "krishi_yolo_train_outputs/krishi_yolo_train/outputs/runs/20260516_173740/train/artifacts/weights/best.pt"
+images_dir: "krishi_bouncer_dataset/val"
+output_dir: "krishi_yolo_train_outputs/thesis_ready_data/benchmark_latency"
+imgsz: 640
+device: "cpu"
+warmup: 10

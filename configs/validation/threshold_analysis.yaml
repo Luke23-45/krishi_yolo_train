@@ -1,0 +1,11 @@
+# Threshold analysis configuration
+# Output: threshold_sweep.csv, threshold_sweep.json, optimal_thresholds.json
+
+model: "krishi_yolo_train_outputs/krishi_yolo_train/outputs/runs/20260516_173740/train/artifacts/weights/best.pt"
+data: "krishi_bouncer_dataset/data.yaml"
+output_dir: "krishi_yolo_train_outputs/thesis_ready_data/threshold_analysis"
+imgsz: 640
+device: "cpu"
+start: 0.05
+end: 0.95
+step: 0.05

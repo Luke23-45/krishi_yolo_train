@@ -70,7 +70,7 @@ venv.bak/
 *~
 .DS_Store
 
-# Machine Learning / YOLO specific
+
 datasets/
 # data/
 runs/
@@ -81,7 +81,7 @@ wandb/
 *.tflite
 *.pb
 *.engine
-yolov8*.pt
+# yolov8*.pt
 
 # Colab
 .config/
@@ -93,3 +93,4 @@ ledger
 outputs
 mobile
 PIPELINE_GUIDE.md
+krishi_yolo_train_outputs

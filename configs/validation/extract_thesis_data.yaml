@@ -1,0 +1,5 @@
+# Extract thesis data configuration
+# Output: metrics/, metadata/, images/ subdirectories
+
+run_dir: "krishi_yolo_train_outputs/krishi_yolo_train/outputs/runs/20260516_173740/train"
+output_dir: "krishi_yolo_train_outputs/thesis_ready_data/extracted"
