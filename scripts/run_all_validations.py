@@ -50,8 +50,16 @@ def run_command(cmd: List[str], step_name: str) -> bool:
     logger.info(f"Command: {' '.join(cmd)}")
     start_time = time.perf_counter()
     
+    import os
+    env = os.environ.copy()
+    src_path = str(PROJECT_ROOT / "src")
+    if "PYTHONPATH" in env:
+        env["PYTHONPATH"] = f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    else:
+        env["PYTHONPATH"] = src_path
+    
     try:
-        result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
+        result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True, env=env)
         elapsed = time.perf_counter() - start_time
         logger.info(f"--- Completed {step_name} in {elapsed:.2f}s ---\n")
         return True
