@@ -2,7 +2,7 @@
 """
 scripts/run_all_validations.py
 ------------------------------
-End-to-End Orchestrator for YOLO Quantization and Validation.
+End-to-End Orchestrator for YOLO Quantization and Validation with State Machine.
 
 This script automates:
 1. Extracting thesis-ready data from a training run.
@@ -20,6 +20,7 @@ import logging
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -41,6 +42,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cpu", help="Inference device (e.g., cpu, cuda:0)")
     parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold for robust validation")
     parser.add_argument("--iou", type=float, default=0.5, help="IoU threshold for robust validation")
+    
+    # New state machine / selection arguments
+    parser.add_argument(
+        "--run-steps", 
+        default=None, 
+        help="Comma-separated list of validation steps to run. E.g., 'extract,quantize'. If omitted, all steps are run."
+    )
+    parser.add_argument(
+        "--skip-steps", 
+        default=None, 
+        help="Comma-separated list of validation steps to skip. E.g., 'baseline_latency,baseline_robust'."
+    )
+    parser.add_argument(
+        "--force-quantize", 
+        action="store_true", 
+        help="Force quantization run even if quantized outputs directory already exists."
+    )
+    parser.add_argument(
+        "--skip-baseline", 
+        action="store_true", 
+        help="Skip extraction and baseline validations to resume directly from quantization (legacy alias)"
+    )
     return parser
 
 
@@ -69,6 +92,298 @@ def run_command(cmd: List[str], step_name: str) -> bool:
         return False
 
 
+class ValidationContext:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.model_path = Path(args.model).resolve()
+        self.data_path = Path(args.data).resolve()
+        self.run_dir = Path(args.run_dir).resolve()
+        self.images_dir = Path(args.images_dir).resolve()
+        self.output_root = Path(args.output_root).resolve()
+        self.imgsz = args.imgsz
+        self.device = args.device
+        self.conf = args.conf
+        self.iou = args.iou
+        
+        # Resolve active quantized directory
+        self.quantize_out = self._resolve_quantize_dir(args.force_quantize)
+
+    def _resolve_quantize_dir(self, force_quantize: bool) -> Path:
+        """Dynamically resolve the quantized output directory path.
+        
+        If force_quantize is requested, creates a new unique directory with a timestamp.
+        Otherwise, scans output_root to locate the most recently modified valid quantized directory
+        (defaulting to output_root / 'quantized' if none are found).
+        """
+        default_dir = self.output_root / "quantized"
+        
+        if force_quantize:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            forced_dir = self.output_root / f"quantized_{timestamp}"
+            logger.info(f"Force-quantize requested. Resolved new quantized output directory: {forced_dir}")
+            return forced_dir
+            
+        candidates = []
+        if self.output_root.exists():
+            for p in self.output_root.iterdir():
+                if p.is_dir() and (p.name == "quantized" or p.name.startswith("quantized_")):
+                    # Validate if it actually has quantized models or a manifest
+                    has_manifest = (p / "quant_manifest.json").exists()
+                    has_tflite = any((p / level).exists() for level in ["fp32", "fp16", "int8"])
+                    if has_manifest or has_tflite:
+                        candidates.append((p.stat().st_mtime, p))
+                        
+        if candidates:
+            # Sort candidates by modification time, most recent first
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            newest_dir = candidates[0][1]
+            logger.info(f"Found existing valid quantized directory: {newest_dir}")
+            return newest_dir
+            
+        logger.info(f"No existing quantized directory found. Defaulting to: {default_dir}")
+        return default_dir
+
+
+class ValidationStateMachine:
+    def __init__(self, ctx: ValidationContext):
+        self.ctx = ctx
+        self.steps = {
+            "extract": self.run_extract,
+            "baseline_threshold": self.run_baseline_threshold,
+            "baseline_latency": self.run_baseline_latency,
+            "baseline_robust": self.run_baseline_robust,
+            "quantize": self.run_quantize,
+            "quantized_latency": self.run_quantized_latency,
+            "quantized_robust": self.run_quantized_robust,
+        }
+        
+    def get_active_steps(self) -> List[str]:
+        """Resolves which steps should be run based on run-steps and skip-steps inputs."""
+        # 1. Parse run-steps
+        if self.ctx.args.run_steps:
+            run_list = [s.strip() for s in self.ctx.args.run_steps.split(",") if s.strip()]
+            invalid = [s for s in run_list if s not in self.steps]
+            if invalid:
+                raise ValueError(f"Invalid step(s) specified in --run-steps: {invalid}. Available: {list(self.steps.keys())}")
+            active = run_list
+        else:
+            active = list(self.steps.keys())
+            
+        # 2. Parse skip-steps
+        skip_list = []
+        if self.ctx.args.skip_steps:
+            skip_list = [s.strip() for s in self.ctx.args.skip_steps.split(",") if s.strip()]
+            invalid = [s for s in skip_list if s not in self.steps]
+            if invalid:
+                raise ValueError(f"Invalid step(s) specified in --skip-steps: {invalid}. Available: {list(self.steps.keys())}")
+                
+        # 3. Handle legacy --skip-baseline alias
+        if self.ctx.args.skip_baseline:
+            baseline_steps = ["extract", "baseline_threshold", "baseline_latency", "baseline_robust"]
+            skip_list.extend(baseline_steps)
+            
+        # 4. Filter active steps
+        active = [s for s in active if s not in skip_list]
+        return active
+
+    def execute(self) -> int:
+        """Orchestrates and executes the active steps in the validation pipeline."""
+        try:
+            active_steps = self.get_active_steps()
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
+            
+        if not active_steps:
+            logger.warning("No steps selected for execution.")
+            return 0
+            
+        logger.info(f"Active validation pipeline steps: {active_steps}")
+        overall_success = True
+        
+        for step_name in active_steps:
+            logger.info(f"==================================================")
+            logger.info(f"Executing Step: {step_name}")
+            logger.info(f"==================================================")
+            
+            step_func = self.steps[step_name]
+            try:
+                step_success = step_func()
+                if not step_success:
+                    logger.error(f"Step '{step_name}' failed.")
+                    overall_success = False
+            except Exception as e:
+                logger.exception(f"Step '{step_name}' raised an unhandled exception: {e}")
+                overall_success = False
+                
+        if overall_success:
+            logger.info("==================================================")
+            logger.info("Validation pipeline completed successfully!")
+            logger.info(f"Results saved to: {self.ctx.output_root}")
+            logger.info("==================================================")
+            return 0
+        else:
+            logger.warning("==================================================")
+            logger.warning("Validation pipeline finished with errors. Check logs.")
+            logger.warning("==================================================")
+            return 1
+
+    def run_extract(self) -> bool:
+        thesis_out = self.ctx.output_root / "thesis_data"
+        cmd = [
+            sys.executable, "-m", "yoloml.validations.extract_thesis_data",
+            f"run_dir={self.ctx.run_dir}",
+            f"output_dir={thesis_out}"
+        ]
+        return run_command(cmd, "Extract Thesis Data")
+        
+    def run_baseline_threshold(self) -> bool:
+        baseline_out = self.ctx.output_root / "baseline"
+        cmd = [
+            sys.executable, "-m", "yoloml.validations.threshold_analysis",
+            f"model={self.ctx.model_path}",
+            f"data={self.ctx.data_path}",
+            f"output_dir={baseline_out / 'threshold'}",
+            f"imgsz={self.ctx.imgsz}",
+            f"device={self.ctx.device}"
+        ]
+        return run_command(cmd, "Baseline Threshold Analysis")
+        
+    def run_baseline_latency(self) -> bool:
+        baseline_out = self.ctx.output_root / "baseline"
+        cmd = [
+            sys.executable, "-m", "yoloml.validations.benchmark_latency",
+            f"model={self.ctx.model_path}",
+            f"images_dir={self.ctx.images_dir}",
+            f"output_dir={baseline_out / 'latency'}",
+            f"imgsz={self.ctx.imgsz}",
+            f"device={self.ctx.device}"
+        ]
+        return run_command(cmd, "Baseline Latency Benchmark")
+        
+    def run_baseline_robust(self) -> bool:
+        baseline_out = self.ctx.output_root / "baseline"
+        cmd = [
+            sys.executable, "-m", "yoloml.validations.robust_validate",
+            "--model", str(self.ctx.model_path),
+            "--data", str(self.ctx.data_path),
+            "--images-dir", str(self.ctx.images_dir),
+            "--output-dir", str(baseline_out / 'robust_validation'),
+            "--imgsz", str(self.ctx.imgsz),
+            "--conf", str(self.ctx.conf),
+            "--iou", str(self.ctx.iou),
+            "--device", self.ctx.device
+        ]
+        return run_command(cmd, "Baseline Robust Validation")
+
+    def run_quantize(self) -> bool:
+        # Check if the resolved directory already exists and has models
+        # (This check will be skipped naturally if force-quantize creates a new non-existing timestamped directory)
+        if self.ctx.quantize_out.exists() and not self.ctx.args.force_quantize:
+            has_models = any((self.ctx.quantize_out / lvl).exists() for lvl in ["fp32", "fp16", "int8"])
+            if has_models:
+                logger.info(f"Quantization cache hit! Valid models found in: {self.ctx.quantize_out}")
+                logger.info("Skipping quantization step execution.")
+                return True
+                
+        # Perform quantization
+        self.ctx.quantize_out.mkdir(parents=True, exist_ok=True)
+        levels = ["fp32", "fp16", "int8"]
+        success = True
+        for level in levels:
+            cmd = [
+                sys.executable, "-m", "yoloml.models.quantize",
+                f"++quantization.model={self.ctx.model_path}",
+                f"++quantization.data={self.ctx.data_path}",
+                f"++quantization.output_root={self.ctx.quantize_out}",
+                f"++quantization.imgsz={self.ctx.imgsz}",
+                f"++quantization.levels=[{level}]"
+            ]
+            if not run_command(cmd, f"Quantization ({level.upper()})"):
+                logger.error(f"Quantization failed for {level}.")
+                success = False
+        return success
+
+    def _get_quantized_models(self) -> List[Dict[str, str]]:
+        # Helper to load all quantized models found inside resolved quantize_out
+        levels = ["fp32", "fp16", "int8"]
+        models = []
+        for level in levels:
+            level_dir = self.ctx.quantize_out / level
+            metadata_file = level_dir / "metadata.json"
+            
+            if not metadata_file.exists():
+                logger.warning(f"Metadata not found for {level} in {level_dir}. Skipping.")
+                continue
+                
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                tflite_path = metadata.get("tflite_path")
+                if tflite_path and Path(tflite_path).exists():
+                    models.append({
+                        "level": level,
+                        "path": tflite_path,
+                        "dir": level_dir
+                    })
+                else:
+                    logger.warning(f"TFLite model path '{tflite_path}' missing or invalid for {level}.")
+            except Exception as e:
+                logger.error(f"Failed to read metadata for {level}: {e}")
+        return models
+
+    def run_quantized_latency(self) -> bool:
+        models = self._get_quantized_models()
+        if not models:
+            logger.error("No valid quantized models found for validation. Ensure 'quantize' step is run first.")
+            return False
+            
+        success = True
+        for model_info in models:
+            level = model_info["level"]
+            tflite_path = model_info["path"]
+            level_dir = model_info["dir"]
+            
+            cmd = [
+                sys.executable, "-m", "yoloml.validations.benchmark_latency",
+                f"model={tflite_path}",
+                f"images_dir={self.ctx.images_dir}",
+                f"output_dir={level_dir / 'latency'}",
+                f"imgsz={self.ctx.imgsz}",
+                f"device={self.ctx.device}"
+            ]
+            if not run_command(cmd, f"Quantized ({level}) Latency Benchmark"):
+                success = False
+        return success
+
+    def run_quantized_robust(self) -> bool:
+        models = self._get_quantized_models()
+        if not models:
+            logger.error("No valid quantized models found for validation. Ensure 'quantize' step is run first.")
+            return False
+            
+        success = True
+        for model_info in models:
+            level = model_info["level"]
+            tflite_path = model_info["path"]
+            level_dir = model_info["dir"]
+            
+            cmd = [
+                sys.executable, "-m", "yoloml.validations.robust_validate",
+                "--model", str(tflite_path),
+                "--data", str(self.ctx.data_path),
+                "--images-dir", str(self.ctx.images_dir),
+                "--output-dir", str(level_dir / 'robust_validation'),
+                "--imgsz", str(self.ctx.imgsz),
+                "--conf", str(self.ctx.conf),
+                "--iou", str(self.ctx.iou),
+                "--device", self.ctx.device
+            ]
+            if not run_command(cmd, f"Quantized ({level}) Robust Validation"):
+                success = False
+        return success
+
+
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
@@ -95,138 +410,9 @@ def main() -> int:
     output_root.mkdir(parents=True, exist_ok=True)
     logger.info(f"Master output directory: {output_root}")
 
-    # Modules for scripts
-    extract_mod = "yoloml.validations.extract_thesis_data"
-    threshold_mod = "yoloml.validations.threshold_analysis"
-    benchmark_mod = "yoloml.validations.benchmark_latency"
-    robust_mod = "yoloml.validations.robust_validate"
-    quantize_mod = "yoloml.models.quantize"
-
-    overall_success = True
-
-    # 1. Extract Thesis Data
-    thesis_out = output_root / "thesis_data"
-    cmd_extract = [
-        sys.executable, "-m", extract_mod,
-        f"run_dir={run_dir}",
-        f"output_dir={thesis_out}"
-    ]
-    if not run_command(cmd_extract, "Extract Thesis Data"):
-        overall_success = False
-
-    # 2. Baseline Validations
-    baseline_out = output_root / "baseline"
-    
-    # 2a. Threshold Analysis
-    cmd_thresh = [
-        sys.executable, "-m", threshold_mod,
-        f"model={model_path}",
-        f"data={data_path}",
-        f"output_dir={baseline_out / 'threshold'}",
-        f"imgsz={args.imgsz}",
-        f"device={args.device}"
-    ]
-    if not run_command(cmd_thresh, "Baseline Threshold Analysis"):
-        overall_success = False
-
-    # 2b. Benchmark Latency
-    cmd_bench = [
-        sys.executable, "-m", benchmark_mod,
-        f"model={model_path}",
-        f"images_dir={images_dir}",
-        f"output_dir={baseline_out / 'latency'}",
-        f"imgsz={args.imgsz}",
-        f"device={args.device}"
-    ]
-    if not run_command(cmd_bench, "Baseline Latency Benchmark"):
-        overall_success = False
-
-    # 2c. Robust Validate
-    cmd_robust = [
-        sys.executable, "-m", robust_mod,
-        "--model", str(model_path),
-        "--data", str(data_path),
-        "--images-dir", str(images_dir),
-        "--output-dir", str(baseline_out / 'robust_validation'),
-        "--imgsz", str(args.imgsz),
-        "--conf", str(args.conf),
-        "--iou", str(args.iou),
-        "--device", args.device
-    ]
-    if not run_command(cmd_robust, "Baseline Robust Validation"):
-        overall_success = False
-
-    # 3. Quantization
-    quantize_out = output_root / "quantized"
-    cmd_quantize = [
-        sys.executable, "-m", quantize_mod,
-        f"quantization.model={model_path}",
-        f"quantization.data={data_path}",
-        f"quantization.output_root={quantize_out}",
-        f"quantization.imgsz={args.imgsz}",
-        f"quantization.levels=[fp32,fp16,int8]"
-    ]
-    if not run_command(cmd_quantize, "Multi-level Quantization"):
-        logger.error("Quantization failed. Skipping quantized validations.")
-        return 1
-
-    # 4. Quantized Validations
-    # quantize.py outputs to `quantize_out / {level}` and writes a metadata.json
-    levels = ["fp32", "fp16", "int8"]
-    for level in levels:
-        level_dir = quantize_out / level
-        metadata_file = level_dir / "metadata.json"
-        
-        if not metadata_file.exists():
-            logger.warning(f"Metadata not found for {level}. Skipping validation for {level}.")
-            continue
-            
-        try:
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-            tflite_path = metadata.get("tflite_path")
-            if not tflite_path or not Path(tflite_path).exists():
-                logger.warning(f"TFLite model missing for {level}. Skipping validation.")
-                continue
-        except Exception as e:
-            logger.error(f"Failed to read metadata for {level}: {e}")
-            continue
-            
-        logger.info(f"Validating Quantized Model: {level} ({tflite_path})")
-
-        # 4a. Quantized Latency
-        cmd_qbench = [
-            sys.executable, "-m", benchmark_mod,
-            f"model={tflite_path}",
-            f"images_dir={images_dir}",
-            f"output_dir={level_dir / 'latency'}",
-            f"imgsz={args.imgsz}",
-            f"device={args.device}"
-        ]
-        if not run_command(cmd_qbench, f"Quantized ({level}) Latency Benchmark"):
-            overall_success = False
-
-        # 4b. Quantized Robust Validate
-        cmd_qrobust = [
-            sys.executable, "-m", robust_mod,
-            "--model", str(tflite_path),
-            "--data", str(data_path),
-            "--images-dir", str(images_dir),
-            "--output-dir", str(level_dir / 'robust_validation'),
-            "--imgsz", str(args.imgsz),
-            "--conf", str(args.conf),
-            "--iou", str(args.iou),
-            "--device", args.device
-        ]
-        if not run_command(cmd_qrobust, f"Quantized ({level}) Robust Validation"):
-            overall_success = False
-
-    if overall_success:
-        logger.info(f"All validations completed successfully! Data saved to: {output_root}")
-        return 0
-    else:
-        logger.warning(f"Pipeline completed with errors. Check logs. Partial data saved to: {output_root}")
-        return 1
+    ctx = ValidationContext(args)
+    state_machine = ValidationStateMachine(ctx)
+    return state_machine.execute()
 
 
 if __name__ == "__main__":

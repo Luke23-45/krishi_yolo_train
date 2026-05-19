@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yoloml.models.robust_validate import (
+from yoloml.validations.robust_validate import (
     GroundTruth,
     Prediction,
     collect_images,

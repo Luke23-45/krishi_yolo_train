@@ -56,6 +56,10 @@ def export_tflite(
         export_kwargs["half"] = True
     elif level == "int8":
         export_kwargs["int8"] = True
+        # Logical Fix: Ultralytics incorrectly attempts to cache the entire dataset during INT8 calibration.
+        # By setting fraction=0.15, we constrain the dataloader to a logically sound 15% subset (standard ~530 images)
+        export_kwargs["fraction"] = 0.15
+        export_kwargs["batch"] = 1  # Mandated: Compiles the TFLite model with a batch shape of 1 so validation fits single images!
         if data_yaml and data_yaml.exists():
             export_kwargs["data"] = str(data_yaml)
             logger.info("Using dataset '%s' for INT8 calibration.", data_yaml.name)
